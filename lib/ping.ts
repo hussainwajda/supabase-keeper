@@ -1,5 +1,7 @@
 import "server-only";
-import { db, type Project } from "@/lib/db";
+import { db, forWrite, keepAliveProjects, type Project } from "@/lib/registry";
+import { getProvider } from "@/lib/providers/registry";
+import type { PingOutcome, ProjectRef, Strategy } from "@/lib/providers/types";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Cron runs daily at a fixed time; allow slack so a project due "in 23h50m" isn't skipped a whole day.
@@ -7,11 +9,14 @@ const DUE_SLACK_MS = 2 * 60 * 60 * 1000;
 
 export type PingResult = {
   projectId: string;
+  provider: string;
   name: string;
   status: "ok" | "error";
+  strategy: Strategy;
   httpStatus: number | null;
   durationMs: number;
   error: string | null;
+  via: string | null;
 };
 
 export function isDue(p: Project, now = Date.now()): boolean {
@@ -20,70 +25,106 @@ export function isDue(p: Project, now = Date.now()): boolean {
   return now - new Date(p.last_pinged_at).getTime() >= p.interval_days * DAY_MS - DUE_SLACK_MS;
 }
 
+/** The shape adapters expect, built from a registry row. */
+export function toProjectRef(p: Project): ProjectRef {
+  return {
+    externalId: p.external_id,
+    name: p.name,
+    metadata: {
+      ...p.metadata,
+      // Legacy column still wins until migration 0006 drops it.
+      ping_table: p.ping_table ?? (p.metadata.ping_table as string | undefined) ?? null,
+    },
+  };
+}
+
 /**
- * Hit the project's REST API with its anon key. With a ping table this runs a real
- * `select ... limit 1` against Postgres, which is what counts as activity.
+ * Credentials for one project.
+ *
+ * Phase 2 replaces this with a decrypting read from the `secrets` table. Until then the
+ * Supabase anon key still lives in a plaintext column, which is exactly what migration 0005
+ * is for.
  */
-async function hit(p: Project): Promise<Omit<PingResult, "projectId" | "name">> {
-  const base = `https://${p.ref}.supabase.co`;
-  const started = Date.now();
-  if (!p.anon_key) {
-    return { status: "error", httpStatus: null, durationMs: 0, error: "No anon/publishable key saved for this project" };
-  }
-
-  const headers: Record<string, string> = { apikey: p.anon_key };
-  // Legacy anon keys are JWTs and go in Authorization too; new sb_publishable_ keys must not.
-  if (p.anon_key.startsWith("eyJ")) headers.Authorization = `Bearer ${p.anon_key}`;
-
-  const url = p.ping_table
-    ? `${base}/rest/v1/${encodeURIComponent(p.ping_table)}?select=*&limit=1`
-    : `${base}/auth/v1/health`;
-
-  try {
-    const res = await fetch(url, { headers, cache: "no-store", signal: AbortSignal.timeout(20_000) });
-    const durationMs = Date.now() - started;
-    if (res.ok) return { status: "ok", httpStatus: res.status, durationMs, error: null };
-
-    let body = (await res.text()).slice(0, 300);
-    if (res.status === 404 && p.ping_table) {
-      body = `Table "${p.ping_table}" not found — run supabase/keep_alive.sql in this project. ${body}`;
-    }
-    if (res.status === 540 || /paused/i.test(body)) {
-      body = `Project appears to be PAUSED — restore it from the dashboard. ${body}`;
-    }
-    return { status: "error", httpStatus: res.status, durationMs, error: body || res.statusText };
-  } catch (e) {
-    return { status: "error", httpStatus: null, durationMs: Date.now() - started, error: (e as Error).message };
-  }
+function credentialsFor(p: Project): Record<string, string | undefined> {
+  return { anon_key: p.anon_key ?? undefined };
 }
 
 export async function pingProject(p: Project): Promise<PingResult> {
-  const r = await hit(p);
+  const adapter = getProvider(p.provider);
+
+  let outcome: PingOutcome;
+  if (!adapter.ping) {
+    // A `watch` or `alert_only` provider reached the ping path. Record it honestly rather
+    // than reporting a keep-alive that never happened.
+    outcome = {
+      status: "error",
+      strategy: adapter.policy.strategy,
+      httpStatus: null,
+      durationMs: 0,
+      error: `${adapter.name} cannot be kept alive by pinging (${adapter.policy.strategy}).`,
+    };
+  } else {
+    outcome = await adapter.ping(toProjectRef(p), credentialsFor(p));
+  }
+
   const now = new Date().toISOString();
-  await Promise.all([
-    db()
-      .from("projects")
-      .update({ last_pinged_at: now, last_status: r.status, last_error: r.error })
-      .eq("id", p.id),
-    db().from("ping_logs").insert({
+  const [projectUpdate, logInsert] = await Promise.all([
+    forWrite("projects", {
+      last_pinged_at: now,
+      last_status: outcome.status,
+      last_error: outcome.error,
+      ...(outcome.lifecycle ? { lifecycle: outcome.lifecycle } : {}),
+    }),
+    forWrite("ping_logs", {
       project_id: p.id,
-      status: r.status,
-      http_status: r.httpStatus,
-      duration_ms: r.durationMs,
-      error: r.error,
+      status: outcome.status,
+      strategy: outcome.strategy,
+      via: outcome.via ?? null,
+      http_status: outcome.httpStatus,
+      duration_ms: outcome.durationMs,
+      error: outcome.error,
     }),
   ]);
-  return { projectId: p.id, name: p.name, ...r };
+
+  await Promise.all([
+    db().from("projects").update(projectUpdate).eq("id", p.id),
+    db().from("ping_logs").insert(logInsert),
+  ]);
+
+  return {
+    projectId: p.id,
+    provider: p.provider,
+    name: p.name,
+    status: outcome.status,
+    strategy: outcome.strategy,
+    httpStatus: outcome.httpStatus,
+    durationMs: outcome.durationMs,
+    error: outcome.error,
+    via: outcome.via ?? null,
+  };
 }
 
-/** Ping every keep-alive project (only due ones unless `force`). Used by the cron and "Ping all". */
-export async function pingProjects({ force = false } = {}): Promise<PingResult[]> {
-  const { data, error } = await db().from("projects").select("*").eq("keep_alive", true);
-  if (error) throw error;
-  const targets = (data as Project[]).filter((p) => force || isDue(p));
+/**
+ * Ping every keep-alive project (only due ones unless `force`). Used by the cron and "Ping all".
+ *
+ * Phase 8 adds bounded concurrency and per-provider deadlines so one provider's outage can't
+ * eat the whole 60-second budget. With a single provider the current shape is fine.
+ */
+export async function pingProjects({
+  force = false,
+  provider,
+}: { force?: boolean; provider?: string } = {}): Promise<PingResult[]> {
+  const all = await keepAliveProjects();
+  const targets = all
+    .filter((p) => !provider || p.provider === provider)
+    .filter((p) => force || isDue(p));
+
   const results = await Promise.all(targets.map(pingProject));
 
   // Housekeeping: keep 90 days of logs.
-  await db().from("ping_logs").delete().lt("created_at", new Date(Date.now() - 90 * DAY_MS).toISOString());
+  await db()
+    .from("ping_logs")
+    .delete()
+    .lt("created_at", new Date(Date.now() - 90 * DAY_MS).toISOString());
   return results;
 }

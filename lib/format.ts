@@ -1,3 +1,5 @@
+import type { Policy } from "@/lib/providers/types";
+
 export function timeAgo(iso: string | null): string {
   if (!iso) return "never";
   const s = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
@@ -17,8 +19,20 @@ export function nextPingLabel(lastIso: string | null, intervalDays: number, enab
   return days <= 0 ? "next cron run" : `in ~${days}d`;
 }
 
-// Free-plan projects pause after 7 days without activity.
-export function daysUntilPauseRisk(lastIso: string | null): number | null {
-  if (!lastIso) return null;
-  return 7 - (Date.now() - new Date(lastIso).getTime()) / 86_400_000;
+/**
+ * Days until the provider pauses this project for inactivity.
+ *
+ * Reads the window from the provider's own policy instead of assuming Supabase's 7 days —
+ * Atlas allows 30, Upstash ~14, Appwrite 7. Returns null when the provider has no
+ * inactivity policy (Neon) or we've never seen activity.
+ */
+export function daysUntilPauseRisk(lastIso: string | null, policy: Policy): number | null {
+  if (!lastIso || policy.pausesAfterDays === null) return null;
+  return policy.pausesAfterDays - (Date.now() - new Date(lastIso).getTime()) / 86_400_000;
+}
+
+/** A pause-risk window is "urgent" inside the last 30% of the provider's grace period. */
+export function isUrgentRisk(daysLeft: number | null, policy: Policy): boolean {
+  if (daysLeft === null || policy.pausesAfterDays === null) return false;
+  return daysLeft < Math.max(1.5, policy.pausesAfterDays * 0.3);
 }

@@ -1,20 +1,48 @@
-import { listAccounts, listProjects } from "@/lib/db";
+import { listAccounts, listProjects, slotsUsed } from "@/lib/registry";
+import { providerOptions } from "@/lib/providers/options";
+import { PROVIDER_IDS, type ProviderId } from "@/lib/providers/types";
 import { ProjectForm } from "@/components/project-form";
+import { Card, CardContent } from "@/components/ui/card";
 import { KEEP_ALIVE_SQL } from "@/lib/keep-alive-sql";
 
 export const dynamic = "force-dynamic";
 
-export default async function NewProject({ searchParams }: { searchParams: Promise<{ ref?: string }> }) {
-  const [{ ref }, accounts, projects] = await Promise.all([searchParams, listAccounts(), listProjects()]);
-  const slotsUsed: Record<string, number> = {};
-  for (const p of projects) if (p.account_id) slotsUsed[p.account_id] = (slotsUsed[p.account_id] ?? 0) + 1;
+export default async function NewProject({
+  searchParams,
+}: {
+  searchParams: Promise<{ ref?: string; provider?: string }>;
+}) {
+  const [params, accounts, projects] = await Promise.all([
+    searchParams,
+    listAccounts(),
+    listProjects(),
+  ]);
+
+  const provider = PROVIDER_IDS.includes(params.provider as ProviderId)
+    ? (params.provider as ProviderId)
+    : undefined;
 
   return (
     <>
-      <div className="page-head"><h1>Add project</h1></div>
-      <div className="card">
-        <ProjectForm accounts={accounts} slotsUsed={slotsUsed} defaultRef={ref} keepAliveSql={KEEP_ALIVE_SQL} />
+      <div className="mb-5">
+        <h1 className="text-xl font-semibold tracking-tight">Add project</h1>
+        <p className="text-muted-foreground text-[0.8125rem]">
+          Register a database so Keepstack can tell you who owns it — and keep it from pausing.
+        </p>
       </div>
+
+      <Card className="max-w-3xl">
+        <CardContent>
+          <ProjectForm
+            accounts={accounts}
+            slotsUsed={slotsUsed(projects)}
+            providers={providerOptions()}
+            defaultProvider={provider}
+            defaultExternalId={params.ref}
+            keepAliveSql={KEEP_ALIVE_SQL}
+          />
+        </CardContent>
+      </Card>
     </>
   );
 }

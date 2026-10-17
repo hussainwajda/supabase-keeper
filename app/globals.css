@@ -1,127 +1,254 @@
-:root {
-  --bg: #f7f8f7;
-  --surface: #ffffff;
-  --border: #e3e6e4;
-  --text: #171a19;
-  --muted: #69716d;
-  --accent: #1f9d68;
-  --accent-ink: #ffffff;
-  --ok: #1f9d68;
-  --warn: #c07a00;
-  --err: #d0412f;
-  --chip: #eef2ef;
-  color-scheme: light;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #111413;
-    --surface: #181c1a;
-    --border: #2a302d;
-    --text: #e8ecea;
-    --muted: #8d9792;
-    --accent: #3ecf8e;
-    --accent-ink: #07130d;
-    --ok: #3ecf8e;
-    --warn: #f0b429;
-    --err: #ff6b5b;
-    --chip: #222826;
-    color-scheme: dark;
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/*
+  Keepstack design tokens.
+  Direction: dense operations console (density 8/10, subtle motion).
+  Slate surfaces + a status-green accent, carried over from supabase-keeper so the app
+  still feels like itself. Flat layered surfaces rather than glassmorphism: this screen is
+  mostly tabular data, and backdrop blur behind small text costs contrast for no gain.
+*/
+
+/* `dark:` utilities follow the same three triggers as the token blocks below. */
+@custom-variant dark {
+  &:where(.dark, .dark *) { @slot; }
+  &:where([data-theme="dark"], [data-theme="dark"] *) { @slot; }
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme="light"]):not(.light) *, :root:not([data-theme="light"]):not(.light)) { @slot; }
   }
 }
 
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+:root {
+  --radius: 0.5rem;
+
+  --background: oklch(0.985 0.002 247);
+  --foreground: oklch(0.21 0.02 256);
+
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.02 256);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.02 256);
+
+  /* Slate-900: used for primary buttons and headings, not for brand colour. */
+  --primary: oklch(0.28 0.03 257);
+  --primary-foreground: oklch(0.984 0.003 247);
+  --secondary: oklch(0.967 0.004 247);
+  --secondary-foreground: oklch(0.28 0.03 257);
+
+  --muted: oklch(0.967 0.004 247);
+  --muted-foreground: oklch(0.52 0.02 257);
+
+  /* Status green. The brand accent and the "alive" signal are the same colour on purpose. */
+  --accent: oklch(0.63 0.16 155);
+  --accent-foreground: oklch(0.985 0.01 155);
+
+  --destructive: oklch(0.58 0.21 27);
+  --destructive-foreground: oklch(0.985 0.002 247);
+  --warning: oklch(0.68 0.14 70);
+  --warning-foreground: oklch(0.24 0.04 70);
+  --success: oklch(0.63 0.16 155);
+  --success-foreground: oklch(0.985 0.01 155);
+
+  --border: oklch(0.92 0.005 247);
+  --input: oklch(0.92 0.005 247);
+  --ring: oklch(0.63 0.16 155);
+
+  /* Provider accents. Each adapter names one; kept here so a badge never hardcodes a hex. */
+  --provider-supabase: oklch(0.68 0.17 156);
+  --provider-neon: oklch(0.78 0.19 158);
+  --provider-mongodb: oklch(0.58 0.15 148);
+  --provider-upstash: oklch(0.66 0.17 151);
+  --provider-appwrite: oklch(0.6 0.21 15);
+
+  --chart-1: oklch(0.63 0.16 155);
+  --chart-2: oklch(0.58 0.14 240);
+  --chart-3: oklch(0.68 0.14 70);
+  --chart-4: oklch(0.6 0.19 310);
+  --chart-5: oklch(0.58 0.21 27);
+
+  /* Density 8/10 — dashboard scale. */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
 }
-a { color: inherit; }
-code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
-h1 { font-size: 22px; margin: 0 0 4px; }
-h2 { font-size: 16px; margin: 0 0 12px; }
-.muted { color: var(--muted); }
-.small { font-size: 12.5px; }
 
-.topbar {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 12px 20px; border-bottom: 1px solid var(--border); background: var(--surface);
-  position: sticky; top: 0; z-index: 5; flex-wrap: wrap;
+/*
+  Dark tokens apply two ways:
+   - automatically when the OS prefers dark (the original supabase-keeper behaviour), unless
+     the document has opted into light with `data-theme="light"`;
+   - explicitly via `.dark` or `data-theme="dark"`, so a toggle can be added without
+     restructuring any of this.
+*/
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not(.light) {
+    --background: oklch(0.19 0.02 258);
+    --foreground: oklch(0.97 0.003 247);
+
+    --card: oklch(0.23 0.022 257);
+    --card-foreground: oklch(0.97 0.003 247);
+    --popover: oklch(0.25 0.022 257);
+    --popover-foreground: oklch(0.97 0.003 247);
+
+    --primary: oklch(0.97 0.003 247);
+    --primary-foreground: oklch(0.23 0.022 257);
+    --secondary: oklch(0.29 0.022 257);
+    --secondary-foreground: oklch(0.97 0.003 247);
+
+    --muted: oklch(0.29 0.022 257);
+    --muted-foreground: oklch(0.71 0.017 257);
+
+    --accent: oklch(0.76 0.17 158);
+    --accent-foreground: oklch(0.21 0.04 158);
+
+    --destructive: oklch(0.7 0.18 22);
+    --destructive-foreground: oklch(0.21 0.03 22);
+    --warning: oklch(0.8 0.15 80);
+    --warning-foreground: oklch(0.24 0.04 80);
+    --success: oklch(0.76 0.17 158);
+    --success-foreground: oklch(0.21 0.04 158);
+
+    --border: oklch(1 0 0 / 12%);
+    --input: oklch(1 0 0 / 16%);
+    --ring: oklch(0.76 0.17 158);
+
+    --provider-supabase: oklch(0.79 0.18 158);
+    --provider-neon: oklch(0.85 0.2 160);
+    --provider-mongodb: oklch(0.72 0.16 150);
+    --provider-upstash: oklch(0.78 0.17 152);
+    --provider-appwrite: oklch(0.7 0.19 15);
+
+    --chart-1: oklch(0.76 0.17 158);
+    --chart-2: oklch(0.7 0.14 245);
+    --chart-3: oklch(0.8 0.15 80);
+    --chart-4: oklch(0.72 0.18 310);
+    --chart-5: oklch(0.7 0.18 22);
+  }
 }
-.brand { font-weight: 650; text-decoration: none; display: flex; gap: 8px; align-items: center; }
-.logo { color: var(--accent); }
-.topbar nav { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
-.topbar nav > a:not(.btn) { text-decoration: none; color: var(--muted); }
-.topbar nav > a:not(.btn):hover { color: var(--text); }
-.topbar form { margin: 0; }
 
-.container { max-width: 1120px; margin: 0 auto; padding: 24px 16px 64px; }
-.page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+.dark,
+:root[data-theme="dark"] {
+  --background: oklch(0.19 0.02 258);
+  --foreground: oklch(0.97 0.003 247);
 
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
-.grid { display: grid; gap: 12px; }
-.stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 20px; }
-.stat .n { font-size: 24px; font-weight: 650; }
-.stat .l { color: var(--muted); font-size: 12.5px; }
+  --card: oklch(0.23 0.022 257);
+  --card-foreground: oklch(0.97 0.003 247);
+  --popover: oklch(0.25 0.022 257);
+  --popover-foreground: oklch(0.97 0.003 247);
 
-.btn {
-  display: inline-flex; align-items: center; gap: 6px; justify-content: center;
-  background: var(--accent); color: var(--accent-ink); border: 1px solid transparent;
-  border-radius: 7px; padding: 8px 14px; font: inherit; font-weight: 550; cursor: pointer; text-decoration: none;
+  --primary: oklch(0.97 0.003 247);
+  --primary-foreground: oklch(0.23 0.022 257);
+  --secondary: oklch(0.29 0.022 257);
+  --secondary-foreground: oklch(0.97 0.003 247);
+
+  --muted: oklch(0.29 0.022 257);
+  --muted-foreground: oklch(0.71 0.017 257);
+
+  --accent: oklch(0.76 0.17 158);
+  --accent-foreground: oklch(0.21 0.04 158);
+
+  --destructive: oklch(0.7 0.18 22);
+  --destructive-foreground: oklch(0.21 0.03 22);
+  --warning: oklch(0.8 0.15 80);
+  --warning-foreground: oklch(0.24 0.04 80);
+  --success: oklch(0.76 0.17 158);
+  --success-foreground: oklch(0.21 0.04 158);
+
+  --border: oklch(1 0 0 / 12%);
+  --input: oklch(1 0 0 / 16%);
+  --ring: oklch(0.76 0.17 158);
+
+  --provider-supabase: oklch(0.79 0.18 158);
+  --provider-neon: oklch(0.85 0.2 160);
+  --provider-mongodb: oklch(0.72 0.16 150);
+  --provider-upstash: oklch(0.78 0.17 152);
+  --provider-appwrite: oklch(0.7 0.19 15);
+
+  --chart-1: oklch(0.76 0.17 158);
+  --chart-2: oklch(0.7 0.14 245);
+  --chart-3: oklch(0.8 0.15 80);
+  --chart-4: oklch(0.72 0.18 310);
+  --chart-5: oklch(0.7 0.18 22);
 }
-.btn:disabled { opacity: 0.6; cursor: progress; }
-.btn-sm { padding: 4px 10px; font-size: 12.5px; }
-.btn-ghost { background: transparent; color: var(--text); border-color: var(--border); }
-.btn-ghost:hover { background: var(--chip); }
-.btn-danger { background: transparent; color: var(--err); border-color: var(--err); }
 
-input, select, textarea {
-  width: 100%; font: inherit; color: var(--text); background: var(--bg);
-  border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px;
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-provider-supabase: var(--provider-supabase);
+  --color-provider-neon: var(--provider-neon);
+  --color-provider-mongodb: var(--provider-mongodb);
+  --color-provider-upstash: var(--provider-upstash);
+  --color-provider-appwrite: var(--provider-appwrite);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --font-sans: var(--font-fira-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-fira-code), ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 6px);
 }
-input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-input[type="checkbox"] { width: auto; }
-label { display: grid; gap: 4px; font-weight: 550; font-size: 13px; }
-label .hint { font-weight: 400; color: var(--muted); font-size: 12px; }
-.form { display: grid; gap: 14px; }
-.row2 { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
-.inline { display: flex; gap: 8px; align-items: center; }
-.error { color: var(--err); background: color-mix(in srgb, var(--err) 10%, transparent); padding: 8px 12px; border-radius: 7px; }
 
-.search { display: flex; gap: 8px; margin-bottom: 16px; }
-.search input { font-size: 15px; padding: 10px 12px; }
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
 
-.table-wrap { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; }
-th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
-th { font-size: 12px; color: var(--muted); font-weight: 550; text-transform: uppercase; letter-spacing: 0.03em; }
-tr:last-child td { border-bottom: 0; }
-td .actions { display: flex; gap: 6px; flex-wrap: wrap; }
-td form { margin: 0; }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-size: 0.875rem;
+    line-height: 1.5;
+  }
 
-.chip { display: inline-block; background: var(--chip); border-radius: 999px; padding: 1px 8px; font-size: 12px; }
-.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
-.dot.ok { background: var(--ok); }
-.dot.error { background: var(--err); }
-.dot.warn { background: var(--warn); }
-.text-err { color: var(--err); }
-.text-warn { color: var(--warn); }
+  /* Tabular figures everywhere numbers are compared down a column. */
+  .tabular,
+  table {
+    font-variant-numeric: tabular-nums;
+  }
 
-.match {
-  border: 2px solid var(--accent); border-radius: 10px; padding: 16px; margin-bottom: 16px;
-  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
-}
-.match .who { font-size: 18px; font-weight: 650; }
+  /* Never remove the focus ring — only restyle it. */
+  :focus-visible {
+    @apply outline-ring outline-2 outline-offset-2;
+  }
 
-.slots { display: flex; gap: 4px; }
-.slot { width: 18px; height: 8px; border-radius: 3px; background: var(--chip); border: 1px solid var(--border); }
-.slot.used { background: var(--accent); border-color: var(--accent); }
-
-details summary { cursor: pointer; }
-pre.sql { background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: 10px; overflow-x: auto; font-size: 12px; }
-
-.login { max-width: 360px; margin: 10vh auto 0; }
-
-@media (max-width: 640px) {
-  .hide-sm { display: none; }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
