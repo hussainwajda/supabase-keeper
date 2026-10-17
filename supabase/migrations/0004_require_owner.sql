@@ -17,7 +17,10 @@ begin
 
   if orphan_accounts > 0 or orphan_projects > 0 then
     raise exception
-      'Still unclaimed: % account(s) and % project(s) have no owner. Sign in and use the "Claim these rows" banner on the dashboard first, then re-run this migration.',
+      'Still unclaimed: % account(s) and % project(s) have no owner.'
+      '  This migration runs AFTER app-side steps: (1) set NEXT_PUBLIC_SUPABASE_ANON_KEY,'
+      '  (2) sign in, (3) press "Claim these rows" on the dashboard. Then re-run this.'
+      '  Nothing is broken in the meantime — unowned rows are simply hidden by RLS.',
       orphan_accounts, orphan_projects;
   end if;
 end $$;

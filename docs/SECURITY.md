@@ -57,11 +57,28 @@ twice, in `profiles`:
 Everything is AES-256-GCM. The GCM authentication tag is the integrity check and the PIN verifier —
 a wrong PIN fails to unwrap rather than being compared against a stored hash, so there is no
 verifier to attack separately. Primitives come from `node:crypto` (`scryptSync`, `createCipheriv`)
-in Node-runtime routes only; `scrypt` is chosen over PBKDF2 because a 6-digit PIN needs memory
+in Node-runtime routes only; `scrypt` is chosen over PBKDF2 because a short PIN needs memory
 hardness, and over Argon2id only to avoid a WASM dependency in a security-critical path.
 
-`key_version` on every secret row exists so `scripts/rotate-key.ts` can re-wrap everything under a
-new master key without downtime.
+**As built** (`lib/crypto/`):
+
+- **Envelope format.** One self-describing blob per secret, `[version:1][iv:12][ciphertext][tag:16]`,
+  stored base64 in a `text` column. One blob rather than separate ciphertext/IV columns means
+  nothing can get half-updated and no code path can pair the wrong IV with a ciphertext. `text`
+  rather than `bytea` because PostgREST represents bytea as `\x…` hex over JSON, which is one more
+  encoding layer to get wrong in both directions for no benefit at these sizes.
+- **scrypt cost:** N=2^17, r=8, p=1 → 128 MB, about 170 ms on a dev laptop and roughly half a
+  second in a serverless function. `maxmem` has to be raised explicitly because Node's 32 MB
+  default would reject these parameters. The cost is paid once per unlock, not per secret.
+- **PIN length:** 4-8 digits. Single repeated digits and consecutive runs are refused outright.
+- **AAD everywhere.** Every blob is bound to its context: `user id + kind + tier` for secrets, and
+  a distinct label for each DEK copy and for session seals. A ciphertext therefore cannot be moved
+  between rows, between users, between kinds, or — the case that matters most — from a `personal`
+  row into a `server` row to get the unattended server to decrypt it. `lib/crypto/__tests__`
+  asserts each of these, including both cross-tier directions.
+
+`key_version` on every secret row exists so a future `scripts/rotate-key.ts` can re-wrap everything
+under a new master key without downtime.
 
 ---
 
@@ -75,10 +92,16 @@ success opens a vault session. Five wrong attempts locks the vault for 15 minute
 (`pin_failed_attempts`, `pin_locked_until`), escalating on repeats. Both outcomes are audited.
 
 **Unlock by OTP.** A 6-digit code, generated with `crypto.randomInt`, is emailed to the address on
-the Keepstack account. Only its SHA-256 hash is stored. Expires in **10 minutes**, single use,
-**5 attempts**, and requesting a new one invalidates the old. On success the server unwraps
-`dek_srv`. This is also the path to reset a forgotten PIN — which necessarily re-wraps `dek_pin`
-under the new PIN, and is audited as `pin.reset`.
+the Keepstack account. Only its SHA-256 hash is stored, and it is compared in constant time.
+Expires in **10 minutes**, single use, **5 attempts**, with a 60-second resend cooldown; requesting
+a new one invalidates the old, so an attacker cannot keep a pool of valid codes alive by triggering
+sends. On success the server unwraps `dek_srv`. This is also the path to reset a forgotten PIN —
+which re-wraps `dek_pin` under the new PIN, and is audited as `vault.pin_reset`.
+
+Email delivery goes through Resend. **Without `RESEND_API_KEY` the OTP path is cleanly disabled in
+the UI and the PIN still works** — only "I forgot my PIN" needs email. In development,
+`KEEPSTACK_OTP_DEV_ECHO=true` prints codes to the server log instead of sending them; it is
+double-gated on `NODE_ENV` so one environment variable cannot switch it on in production.
 
 **The session.** An unlock mints a random 32-byte token; its SHA-256 goes in `vault_sessions.token_hash`
 and the raw token goes to the browser in an httpOnly, Secure, SameSite=Lax cookie. The DEK is
@@ -92,10 +115,17 @@ Sessions last **10 minutes**, are revocable individually or all at once, and are
 out. Expired rows are pruned by the daily sweep.
 
 **Reveal.** With a live session: unseal the DEK, decrypt the one requested secret, return it, write
-an `audit_log` row (`secret.reveal`, which secret, which method, IP, user agent). Revealed values
-are rendered into a field that re-masks after 30 seconds, and **Copy** clears the clipboard after
-60 seconds. Reveal routes are `export const dynamic = "force-dynamic"`, `Cache-Control: no-store`,
-rate-limited per user, and never log plaintext — not in Vercel logs, not in error messages.
+an `audit_log` row (`secret.reveal`, which secret, which kind, which method, IP, user agent) —
+including when decryption *fails*, so a wrong master key shows up in the log rather than silently.
+Revealed values are rendered into a field that re-masks after 30 seconds, and **Copy** clears the
+clipboard after 60 seconds and on unmount. Reveals are server actions on dynamic pages, never
+cached, and never logged.
+
+Revealing a `server`-tier secret is gated on an unlock too. The server can read those unattended
+by design, so the gate is not about key custody — it stops a hijacked browser session from
+exfiltrating provider API keys without re-authentication. A corollary: the vault must have a PIN
+before `anon_key` values are migrated into it, or the owner would have no way to read them back.
+The migration action enforces that.
 
 ---
 
@@ -112,6 +142,8 @@ rate-limited per user, and never log plaintext — not in Vercel logs, not in er
 | PIN guessing | 5 attempts → 15-minute lock, escalating; every attempt audited. |
 | Someone quietly reading your passwords | Every reveal is an `audit_log` row the user can see on the Vault page. |
 | Compromised provider key used to escalate | Setup docs require **scoped** Supabase PATs and a read-only Atlas ping user. |
+| A ciphertext moved between rows to get it decrypted by the wrong key | AAD binds every blob to its user, kind and tier; a moved blob fails to authenticate. |
+| A vault session outliving the sign-in that opened it | Signing out deletes the session row and the cookie; the nightly sweep prunes anything expired. |
 
 **What this design does *not* stop — stated plainly**
 

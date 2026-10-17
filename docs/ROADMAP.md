@@ -68,7 +68,7 @@ without it the root layout crashed the setup page it was supposed to be showing.
 
 ---
 
-## ☐ Phase 2 — The vault
+## ☑ Phase 2 — The vault
 
 Requirements 3 and 4. Deliberately before the new providers, because every provider after this
 stores credentials and they should land encrypted from day one.
@@ -87,6 +87,32 @@ database directly — `select * from secrets` is unreadable ciphertext, and the 
 `anon_key` column is gone.
 **Must not break:** the keep-alive sweep, which now decrypts `server`-tier keys instead of reading
 a plaintext column.
+
+**Built and verified 2026-10-17, with one gap.** `lib/crypto/` ships with **26 unit tests, all
+passing** (`pnpm test`) covering round-trips, wrong keys, tampered tags and ciphertext, malformed
+input, IV uniqueness across 2000 seals, PIN/salt/user binding, and both cross-tier attack
+directions. The sweep was re-run against the live registry and gave the same 3 results as
+Phase 1, now reading keys through the vault with a fallback to the legacy column.
+
+**Not yet verified, and it needs you:** PIN setup, unlock, reveal, lockout, OTP, and the key
+migration. Those need migration `0005` plus a signed-in user, and sign-in still needs the anon
+key. The code degrades deliberately in the meantime: `/vault` shows a "run 0005" notice instead
+of crashing, and the credential panels stay hidden.
+
+Beyond the plan, this phase added:
+- **`0006_drop_plaintext_keys.sql`**, which refuses to run while any plaintext key remains, and
+  also retires the Supabase-only `ref` and `ping_table` columns that 0002 replaced.
+- **A defensive `bytea` → `text` conversion in `0005`.** `0003` had already been run against the
+  live database with `bytea` vault columns before the envelope format was settled, so `0005`
+  migrates them rather than leaving a broken schema.
+- **A `vaultSchemaReady()` guard** on all four pages that read secrets — the Phase 0 lesson about
+  code running ahead of hand-run SQL, applied preemptively this time.
+
+One regression was caught and fixed during testing: Phase 1's setup gate short-circuited *before*
+the public-path check, so `/api/cron/sweep` was redirected to `/setup` whenever the anon key was
+absent. The keep-alive would have silently stopped on a half-configured deployment while the app
+otherwise looked fine. Cron paths are now exempt from the config gate, since they authenticate
+with their own secret and use the service role.
 
 ---
 

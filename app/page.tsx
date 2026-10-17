@@ -15,6 +15,11 @@ import { pingAll, parsePastedIdentifier } from "@/app/actions";
 import { daysUntilPauseRisk, isUrgentRisk } from "@/lib/format";
 import { MigrationNotice } from "@/components/migration-notice";
 import { ClaimNotice } from "@/components/claim-notice";
+import { EncryptKeysNotice } from "@/components/vault/encrypt-keys-notice";
+import { keyMigrationStatus } from "@/lib/vault/migrate-keys";
+import { projectIdsWithStoredKey, vaultSchemaReady } from "@/lib/vault/secrets";
+import { vaultConfigured } from "@/lib/crypto/env";
+import { vaultStatus } from "@/lib/vault";
 
 export const dynamic = "force-dynamic";
 
@@ -45,12 +50,21 @@ function Stat({
 
 export default async function Dashboard() {
   const user = await currentUser();
-  const [projects, accounts, schema, claim] = await Promise.all([
+  const [projects, accounts, schema, claim, keyMigration] = await Promise.all([
     listProjects(),
     listAccounts(),
     schemaStatus(),
     claimAvailable(user?.email ?? null),
+    vaultConfigured() && (await vaultSchemaReady())
+      ? keyMigrationStatus()
+      : Promise.resolve({ pending: 0, columnDropped: false }),
   ]);
+
+  // A project counts as having a key if it's in the vault OR still in the legacy column.
+  const vaultReady = vaultConfigured() && (await vaultSchemaReady());
+  const vaultKeyIds =
+    vaultReady && user ? await projectIdsWithStoredKey(user.id) : new Set<string>();
+  const pinReady = vaultReady && user ? (await vaultStatus(user.id)).initialized : false;
 
   const migrationSql = schema.migration0002
     ? null
@@ -69,6 +83,7 @@ export default async function Dashboard() {
     const safe = toSafeProject(rest as typeof rest & { anon_key: string | null });
     return {
       ...safe,
+      has_key: safe.has_key || vaultKeyIds.has(p.id),
       account,
       console_url: getProvider(p.provider).consoleUrl({
         externalId: p.external_id,
@@ -121,6 +136,9 @@ export default async function Dashboard() {
 
       {migrationSql && <MigrationNotice sql={migrationSql} />}
       {claim.allowed && <ClaimNotice orphans={claim.orphans} />}
+      {keyMigration.pending > 0 && (
+        <EncryptKeysNotice pending={keyMigration.pending} pinReady={pinReady} />
+      )}
 
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <Stat value={accounts.length} label="Accounts" />

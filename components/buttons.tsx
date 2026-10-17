@@ -11,9 +11,18 @@ type SubmitProps = {
   pending?: string;
   confirm?: string;
   className?: string;
+  disabled?: boolean;
 } & VariantProps<typeof buttonVariants>;
 
-export function SubmitButton({ children, pending, confirm, className, variant, size }: SubmitProps) {
+export function SubmitButton({
+  children,
+  pending,
+  confirm,
+  className,
+  variant,
+  size,
+  disabled,
+}: SubmitProps) {
   const status = useFormStatus();
   return (
     <Button
@@ -21,7 +30,7 @@ export function SubmitButton({ children, pending, confirm, className, variant, s
       variant={variant}
       size={size}
       className={className}
-      disabled={status.pending}
+      disabled={status.pending || disabled}
       onClick={(e) => {
         if (confirm && !window.confirm(confirm)) e.preventDefault();
       }}

@@ -53,6 +53,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   <Button asChild variant="ghost" size="sm">
                     <Link href="/accounts">Accounts</Link>
                   </Button>
+                  <Button asChild variant="ghost" size="sm">
+                    <Link href="/vault">Vault</Link>
+                  </Button>
                   <Button asChild size="sm">
                     <Link href="/projects/new">
                       <PlusIcon aria-hidden />

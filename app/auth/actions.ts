@@ -2,7 +2,8 @@
 
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { supabaseServer } from "@/lib/supabase/server";
+import { supabaseServer, currentUser } from "@/lib/supabase/server";
+import { lockVault } from "@/lib/vault/session";
 
 /** The site's own origin, used to build OAuth and email redirect URLs. */
 async function siteOrigin(): Promise<string> {
@@ -85,6 +86,18 @@ export async function signUpWithPassword(_: AuthResult | null, fd: FormData): Pr
 }
 
 export async function signOut() {
+  // Close the vault first: a sealed-DEK row and its cookie must not outlive the session that
+  // opened them. Cross-user reuse is already impossible (the row is bound to a user id), but
+  // leaving either behind is needless exposure.
+  const user = await currentUser();
+  if (user) {
+    try {
+      await lockVault(user.id);
+    } catch {
+      // Never block sign-out on vault cleanup; the session expires on its own regardless.
+    }
+  }
+
   const supabase = await supabaseServer();
   await supabase.auth.signOut();
   redirect("/login");

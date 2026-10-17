@@ -17,10 +17,13 @@ create table if not exists public.profiles (
   display_name         text,
   avatar_url           text,
   -- Vault columns are created here but stay null until Phase 2. See docs/SECURITY.md §2.
+  -- `text` rather than `bytea`: these hold base64 envelopes produced by lib/crypto/aead.ts.
+  -- PostgREST represents bytea as `\x…` hex over JSON, which is an extra encoding layer to
+  -- get wrong in both directions for no benefit at these sizes.
   vault_initialized_at timestamptz,
-  pin_salt             bytea,
-  dek_pin              bytea,
-  dek_srv              bytea,
+  pin_salt             text,
+  dek_pin              text,
+  dek_srv              text,
   pin_failed_attempts  int not null default 0,
   pin_locked_until     timestamptz,
   created_at           timestamptz not null default now()

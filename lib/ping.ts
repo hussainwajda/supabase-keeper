@@ -1,6 +1,8 @@
 import "server-only";
 import { supabaseService } from "@/lib/supabase/service";
 import { forWrite, keepAliveProjects, type Project } from "@/lib/registry";
+import { readServerSecret } from "@/lib/vault/secrets";
+import { vaultConfigured } from "@/lib/crypto/env";
 import { getProvider } from "@/lib/providers/registry";
 import type { PingOutcome, ProjectRef, Strategy } from "@/lib/providers/types";
 
@@ -40,14 +42,22 @@ export function toProjectRef(p: Project): ProjectRef {
 }
 
 /**
- * Credentials for one project.
+ * Credentials for one project, decrypted from the vault.
  *
- * Phase 2 replaces this with a decrypting read from the `secrets` table. Until then the
- * Supabase anon key still lives in a plaintext column, which is exactly what migration 0005
- * is for.
+ * Reads the encrypted `server`-tier secret first and falls back to the legacy plaintext
+ * `projects.anon_key` column, so the sweep keeps working during the window between running
+ * migration 0005 and pressing "Encrypt saved keys". Migration 0006 drops that column once
+ * nothing is left in it.
  */
-function credentialsFor(p: Project): Record<string, string | undefined> {
-  return { anon_key: p.anon_key ?? undefined };
+async function credentialsFor(p: Project): Promise<Record<string, string | undefined>> {
+  let anonKey = p.anon_key ?? undefined;
+
+  if (vaultConfigured() && p.user_id) {
+    const stored = await readServerSecret(p.user_id, { projectId: p.id }, "anon_key");
+    if (stored) anonKey = stored;
+  }
+
+  return { anon_key: anonKey };
 }
 
 export async function pingProject(p: Project): Promise<PingResult> {
@@ -65,7 +75,7 @@ export async function pingProject(p: Project): Promise<PingResult> {
       error: `${adapter.name} cannot be kept alive by pinging (${adapter.policy.strategy}).`,
     };
   } else {
-    outcome = await adapter.ping(toProjectRef(p), credentialsFor(p));
+    outcome = await adapter.ping(toProjectRef(p), await credentialsFor(p));
   }
 
   const now = new Date().toISOString();

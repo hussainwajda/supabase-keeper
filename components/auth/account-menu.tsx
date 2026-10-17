@@ -56,9 +56,11 @@ export function AccountMenu({
             Export registry
           </a>
         </DropdownMenuItem>
-        <DropdownMenuItem disabled>
-          <ShieldIcon aria-hidden />
-          Vault — Phase 2
+        <DropdownMenuItem asChild>
+          <a href="/vault">
+            <ShieldIcon aria-hidden />
+            Vault
+          </a>
         </DropdownMenuItem>
 
         <DropdownMenuSeparator />

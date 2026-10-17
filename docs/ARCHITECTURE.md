@@ -125,9 +125,10 @@ projects        user_id, account_id, provider, external_id, name, region, plan,
                 last_pinged_at, last_status, last_error, discovered_at
                 unique (user_id, provider, external_id)
 secrets         user_id, account_id?, project_id?, kind, label, tier,
-                ciphertext, iv, key_version, last_used_at, last_verified_at
+                ciphertext, key_version, last_used_at, last_verified_at, updated_at
                 check (account_id is not null or project_id is not null)
-vault_sessions  user_id, token_hash, dek_sealed, iv, method, expires_at
+                unique (account_id, kind) / unique (project_id, kind)
+vault_sessions  user_id, token_hash, dek_sealed, method, ip, user_agent, expires_at
 otp_challenges  user_id, code_hash, purpose, attempts, consumed_at, expires_at
 audit_log       user_id, action, target_type, target_id, method, ip, user_agent, detail jsonb
 ping_logs       project_id, strategy, status, http_status, duration_ms, error
@@ -145,6 +146,11 @@ Notes on shape:
   `ping_logs` stay interpretable after a provider changes its rules.
 - **One `secrets` table, not two.** Polymorphic owner (`account_id` *or* `project_id`) beats two
   near-identical tables, and the vault UI gets one code path.
+- **No separate `iv` column.** The IV is packed into the ciphertext envelope, so a row cannot end
+  up with a mismatched pair. See docs/SECURITY.md §2.
+- **`vault_sessions` and `otp_challenges` have no user-facing RLS policies at all.** They are
+  touched only by server-side vault code through the service role. A client able to update its own
+  session row could extend its own sudo window or swap in a different sealed key.
 - **`usage_snapshots` is append-only and narrow.** `(project_id, metric, value, limit_value)` charts
   Neon CU-hours, Upstash commands and Atlas transfer with the same component.
 

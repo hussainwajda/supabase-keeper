@@ -8,6 +8,8 @@ import { claimLegacyRows } from "@/lib/registry/claim";
 import { getProvider, parseIdentifier } from "@/lib/providers/registry";
 import { PROVIDER_IDS, type ProviderId } from "@/lib/providers/types";
 import { pingProject, pingProjects } from "@/lib/ping";
+import { putSecret } from "@/lib/vault/secrets";
+import { vaultConfigured } from "@/lib/crypto/env";
 
 /**
  * Every action starts here. Returns the user id, so writes can stamp ownership — RLS would
@@ -131,8 +133,11 @@ export async function saveProject(_: string | null, fd: FormData): Promise<strin
   };
 
   // Keep-alive fields are hidden when the toggle is off, and a blank key means "keep the saved one".
+  // With the vault available, a key entered here goes into encrypted storage rather than back
+  // into the plaintext column that migration 0006 exists to delete.
   const anonKey = str(fd, "anon_key");
-  if (anonKey) row.anon_key = anonKey;
+  const anonKeyToVault = anonKey && vaultConfigured();
+  if (anonKey && !anonKeyToVault) row.anon_key = anonKey;
   if (fd.has("ping_table")) row.ping_table = str(fd, "ping_table");
   if (fd.has("interval_days")) {
     row.interval_days = Math.min(
@@ -149,6 +154,29 @@ export async function saveProject(_: string | null, fd: FormData): Promise<strin
     return error.code === "23505"
       ? `A ${adapter.name} project with identifier ${externalId} already exists.`
       : error.message;
+  }
+
+  if (anonKeyToVault) {
+    // Needs the row id, so this happens after the insert/update.
+    const projectId =
+      id ??
+      (
+        await db
+          .from("projects")
+          .select("id")
+          .eq("provider", provider)
+          .eq("external_id", externalId)
+          .single()
+      ).data?.id;
+
+    if (projectId) {
+      try {
+        await putSecret(userId, { projectId }, "anon_key", "server", anonKey!);
+      } catch (e) {
+        // The project saved; only the key didn't. Say so rather than failing silently.
+        return `Project saved, but the key couldn't be stored: ${(e as Error).message}`;
+      }
+    }
   }
 
   revalidatePath("/", "layout");

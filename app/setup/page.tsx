@@ -63,10 +63,17 @@ export default function SetupPage() {
         <CardContent className="grid gap-2">
           <h2 className="text-sm font-semibold">Then, in that project&apos;s SQL editor</h2>
           <p className="text-muted-foreground text-[0.8125rem]">
-            Run the migrations in order from <code className="font-mono">supabase/migrations/</code>:
-            <code className="font-mono"> 0001</code>, <code className="font-mono">0002</code>,{" "}
-            <code className="font-mono">0003</code>. Sign in, claim any pre-existing rows, then
-            run <code className="font-mono">0004</code>.
+            Run <code className="font-mono">0001</code>, <code className="font-mono">0002</code>,{" "}
+            <code className="font-mono">0003</code>, <code className="font-mono">0005</code> — in
+            that order, and stop there.
+          </p>
+          <p className="text-muted-foreground text-[0.8125rem]">
+            <code className="font-mono">0004</code> and{" "}
+            <code className="font-mono">0006</code> come <strong className="text-foreground font-medium">last</strong>,
+            after you&apos;ve signed in, claimed your existing rows, set a vault PIN and pressed
+            &ldquo;Encrypt saved keys&rdquo;. They verify work only the running app can do, so
+            they&apos;ll refuse until then — safely. See{" "}
+            <code className="font-mono">docs/MIGRATION.md</code> for the full sequence.
           </p>
           <h2 className="mt-2 text-sm font-semibold">And for the Google button</h2>
           <p className="text-muted-foreground text-[0.8125rem]">

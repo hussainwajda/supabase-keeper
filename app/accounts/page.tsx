@@ -1,6 +1,13 @@
 import Link from "next/link";
 import { listAccounts, listProjects, slotsUsed, type Account } from "@/lib/registry";
-import { activeProviders } from "@/lib/providers/registry";
+import { activeProviders, getProvider } from "@/lib/providers/registry";
+import { currentUser } from "@/lib/supabase/server";
+import { vaultConfigured } from "@/lib/crypto/env";
+import { vaultStatus, vaultUnlocked } from "@/lib/vault";
+import { listSecrets, vaultSchemaReady } from "@/lib/vault/secrets";
+import { otpAvailable } from "@/lib/vault/email";
+import { SecretSlots, type SecretSlot } from "@/components/vault/secret-form";
+import { UnlockDialog } from "@/components/vault/unlock-dialog";
 import { deleteAccount, saveAccount } from "@/app/actions";
 import { SubmitButton } from "@/components/buttons";
 import { Card, CardContent } from "@/components/ui/card";
@@ -77,9 +84,29 @@ function AccountFields({ a, providers }: { a?: Account; providers: { id: string;
 }
 
 export default async function AccountsPage() {
+  const user = await currentUser();
   const [accounts, projects] = await Promise.all([listAccounts(), listProjects()]);
   const providers = activeProviders().map((a) => ({ id: a.id, name: a.name }));
   const used = slotsUsed(projects);
+
+  const vaultReady = vaultConfigured() && (await vaultSchemaReady());
+  const [status, unlocked, allSecrets] = vaultReady && user
+    ? await Promise.all([vaultStatus(user.id), vaultUnlocked(user.id), listSecrets()])
+    : [null, false, []];
+
+  /** Credential slots for one account, from that provider's declared account fields. */
+  function slotsFor(accountId: string, provider: Parameters<typeof getProvider>[0]): SecretSlot[] {
+    const stored = new Map(
+      allSecrets.filter((s) => s.account_id === accountId).map((s) => [s.kind, s.id]),
+    );
+    return getProvider(provider).accountFields.map((f) => ({
+      kind: f.key as SecretSlot["kind"],
+      label: f.label,
+      help: f.help,
+      tier: f.tier,
+      existingId: stored.get(f.key as SecretSlot["kind"]) ?? null,
+    }));
+  }
 
   return (
     <>
@@ -155,6 +182,31 @@ export default async function AccountsPage() {
                       </li>
                     ))}
                   </ul>
+                )}
+
+                {vaultReady && status?.initialized && (
+                  <details className="mt-1">
+                    <summary className="text-muted-foreground cursor-pointer text-xs">
+                      Credentials
+                      {allSecrets.some((x) => x.account_id === a.id) && " · stored"}
+                    </summary>
+                    <div className="mt-3 grid gap-3">
+                      {!unlocked && (
+                        <UnlockDialog
+                          otpEnabled={otpAvailable()}
+                          lockedUntil={status.lockedUntil}
+                          triggerLabel="Unlock vault"
+                          triggerVariant="outline"
+                        />
+                      )}
+                      <SecretSlots
+                        slots={slotsFor(a.id, a.provider)}
+                        accountId={a.id}
+                        unlocked={unlocked}
+                        vaultReady
+                      />
+                    </div>
+                  </details>
                 )}
 
                 <details className="mt-1">

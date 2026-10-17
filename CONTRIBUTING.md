@@ -18,6 +18,7 @@ Before opening a PR:
 
 ```bash
 pnpm typecheck
+pnpm test        # crypto unit tests — fast, no database needed
 pnpm build
 ```
 
@@ -59,6 +60,9 @@ Anything touching `lib/crypto/`, `lib/vault/`, or a migration gets extra scrutin
   on `secrets`.
 - Vault routes pin `runtime = "nodejs"`, opt out of caching, and are rate-limited.
 - Run `/security-review` on the diff and say in the PR that you did.
+- Add tests. `lib/crypto/__tests__/crypto.test.ts` is the model: it asserts the *negative* cases
+  (wrong key, tampered tag, a blob moved between rows or tiers) as carefully as the happy path,
+  because those are the properties the threat model actually depends on.
 
 If you believe you've found a vulnerability, please don't open a public issue — see the contact
 in `docs/SECURITY.md`.

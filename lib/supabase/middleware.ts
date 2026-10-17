@@ -5,8 +5,22 @@ import { registryAnonKey, registryConfigured, registryUrl } from "./env";
 /** Paths reachable without a session. */
 const PUBLIC_PREFIXES = ["/login", "/auth", "/api/cron", "/setup"];
 
+/**
+ * Paths that must work even when the registry env is incomplete.
+ *
+ * The cron authenticates with its own shared secret and talks to the database through the
+ * service role, so it needs neither a user session nor the anon key. Gating it behind the
+ * setup screen would silently stop every keep-alive on a deployment that is missing only the
+ * anon key — the app would look half-broken while quietly letting projects pause.
+ */
+const CONFIG_EXEMPT_PREFIXES = ["/api/cron", "/setup"];
+
+function matchesPrefix(pathname: string, prefixes: string[]): boolean {
+  return prefixes.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+}
+
 function isPublic(pathname: string): boolean {
-  return PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+  return matchesPrefix(pathname, PUBLIC_PREFIXES);
 }
 
 /**
@@ -18,10 +32,12 @@ function isPublic(pathname: string): boolean {
  * to /login the moment their access token expires.
  */
 export async function updateSession(request: NextRequest) {
-  // Without the registry env there is no auth to check and no data to protect. Send everyone
-  // to the setup page rather than throwing on every single request.
+  // Without the registry env there is no auth to check, so send browsers to the setup page
+  // rather than throwing on every request — but let the exempt paths through untouched.
   if (!registryConfigured()) {
-    if (request.nextUrl.pathname === "/setup") return NextResponse.next({ request });
+    if (matchesPrefix(request.nextUrl.pathname, CONFIG_EXEMPT_PREFIXES)) {
+      return NextResponse.next({ request });
+    }
     const url = request.nextUrl.clone();
     url.pathname = "/setup";
     url.search = "";

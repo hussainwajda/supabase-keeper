@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { safeEqual } from "@/lib/auth";
 import { pingProjects } from "@/lib/ping";
+import { pruneExpiredSessions } from "@/lib/vault/session";
 import { PROVIDER_IDS, type ProviderId } from "@/lib/providers/types";
 
 export const dynamic = "force-dynamic";
@@ -30,6 +31,9 @@ export async function GET(req: NextRequest) {
     force: req.nextUrl.searchParams.get("force") === "1",
     provider,
   });
+
+  // Housekeeping: expired sudo sessions and spent OTP challenges don't linger.
+  await pruneExpiredSessions();
 
   const failed = results.filter((r) => r.status === "error");
   if (failed.length) console.error("keepstack sweep failures", failed);

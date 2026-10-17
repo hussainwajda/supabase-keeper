@@ -11,6 +11,13 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { LifecycleBadge, ProviderBadge, StrategyBadge } from "@/components/providers/provider-badge";
 import { KEEP_ALIVE_SQL } from "@/lib/keep-alive-sql";
+import { currentUser } from "@/lib/supabase/server";
+import { vaultConfigured } from "@/lib/crypto/env";
+import { vaultStatus, vaultUnlocked } from "@/lib/vault";
+import { listSecrets, vaultSchemaReady } from "@/lib/vault/secrets";
+import { otpAvailable } from "@/lib/vault/email";
+import { SecretSlots, type SecretSlot } from "@/components/vault/secret-form";
+import { UnlockDialog } from "@/components/vault/unlock-dialog";
 import { deleteProject, pingNow } from "@/app/actions";
 import { cn } from "@/lib/utils";
 
@@ -18,6 +25,7 @@ export const dynamic = "force-dynamic";
 
 export default async function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  const user = await currentUser();
   const [project, accounts, projects, logs] = await Promise.all([
     getProject(id),
     listAccounts(),
@@ -26,9 +34,26 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
   ]);
   if (!project) notFound();
 
+
   const adapter = getProvider(project.provider);
+  // Credentials panel. Each adapter declares the fields it needs and which tier they belong
+  // in, so this stays correct for every provider without a per-provider branch here.
+  const vaultReady = vaultConfigured() && (await vaultSchemaReady());
+  const [status, unlocked, secrets] = vaultReady && user
+    ? await Promise.all([vaultStatus(user.id), vaultUnlocked(user.id), listSecrets({ projectId: id })])
+    : [null, false, []];
+
+  const storedByKind = new Map(secrets.map((s) => [s.kind, s.id]));
+  const secretSlots: SecretSlot[] = adapter.projectFields.map((f) => ({
+    kind: f.key as SecretSlot["kind"],
+    label: f.label,
+    help: f.help,
+    tier: f.tier,
+    existingId: storedByKind.get(f.key as SecretSlot["kind"]) ?? null,
+  }));
   const { account, ...rest } = project;
-  const safe = toSafeProject(rest as typeof rest & { anon_key: string | null });
+  const base = toSafeProject(rest as typeof rest & { anon_key: string | null });
+  const safe = { ...base, has_key: base.has_key || storedByKind.has("anon_key") };
   const consoleUrl = adapter.consoleUrl({
     externalId: project.external_id,
     name: project.name,
@@ -138,6 +163,28 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
                 </TableBody>
               </Table>
             )}
+          </Card>
+
+          <Card>
+            <CardContent className="grid gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-sm font-semibold">Credentials</h2>
+                {vaultReady && status?.initialized && !unlocked && (
+                  <UnlockDialog
+                    otpEnabled={otpAvailable()}
+                    lockedUntil={status.lockedUntil}
+                    triggerLabel="Unlock vault"
+                    triggerVariant="outline"
+                  />
+                )}
+              </div>
+              <SecretSlots
+                slots={secretSlots}
+                projectId={project.id}
+                unlocked={unlocked}
+                vaultReady={vaultReady && !!status?.initialized}
+              />
+            </CardContent>
           </Card>
 
           <Card>

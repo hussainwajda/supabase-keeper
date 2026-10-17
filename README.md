@@ -15,9 +15,9 @@ remember signing up for. Keepstack answers the three questions that actually hur
   after a PIN or an emailed code — the way GitHub makes you re-authenticate before something
   destructive.
 
-> **Status: Phase 1 of 9.** Keepstack is the multi-provider successor to `supabase-keeper`.
-> Supabase works end to end today, with real accounts and row level security; the encrypted
-> vault is Phase 2, and Neon, MongoDB Atlas, Upstash and Appwrite land in Phases 4-7.
+> **Status: Phase 2 of 9.** Keepstack is the multi-provider successor to `supabase-keeper`.
+> Supabase works end to end today, with real accounts, row level security and an encrypted
+> credential vault. Neon, MongoDB Atlas, Upstash and Appwrite land in Phases 4-7.
 > See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ---
@@ -46,6 +46,26 @@ Not every provider is kept alive by pinging it, and pretending otherwise would h
 The model is a property of the provider, not a setting. A `watch` provider never shows you an
 interval picker, and an `alert_only` check is logged as a status check — never as a keep-alive
 that didn't happen.
+
+## The vault
+
+Two tiers, because two very different things get called "a secret":
+
+- **Server tier** — provider API keys, anon keys. The nightly sweep must read these at 3am with
+  nobody watching, so the server has to be able to decrypt them. Pretending otherwise would be
+  security theatre.
+- **Personal tier** — account login passwords, database passwords. Encrypted with a key wrapped
+  by your PIN. Nothing in the sweep needs them.
+
+Reading a personal secret needs a fresh PIN or an emailed code, in a 10-minute window, the way
+GitHub makes you re-authenticate before something destructive. Revealed values re-mask after 30
+seconds, the clipboard clears after 60, and every reveal — including failures — lands in an audit
+log you can read on the Vault page.
+
+Email recovery is optional. Without `RESEND_API_KEY` the PIN still works; only "I forgot my PIN"
+needs email. And if you'd rather the server could never decrypt your personal secrets at all,
+there's a one-way **no recovery** switch that deletes the recovery copy of your key — at the cost
+of permanent loss if you forget the PIN.
 
 ## Security, briefly
 
@@ -82,8 +102,19 @@ absent and where to find it — so you can follow that instead of this list.
 
    Plus `CRON_SECRET` (`openssl rand -hex 32`).
 
-2. **Migrations.** In that project's SQL editor, run `supabase/migrations/` in order:
-   `0001`, `0002`, `0003`. Stop there for now — `0004` comes after step 5.
+   For the vault, also generate two **different** keys with `openssl rand -base64 32`:
+
+   | | |
+   | --- | --- |
+   | `KEEPSTACK_MASTER_KEY` | encrypts server-tier secrets and the recovery copy of your key. **Back this up to a password manager before storing anything** — losing it makes every server-tier secret unrecoverable |
+   | `KEEPSTACK_PIN_PEPPER` | mixed into the PIN key derivation, so a stolen database can't be brute-forced offline |
+
+2. **Migrations.** In that project's SQL editor run `0001`, `0002`, `0003`, `0005` — **in that
+   order, and stop there.**
+
+   > `0004` and `0006` come *last*, after the app-side steps below. They verify work only the
+   > running app can do, so they'll refuse to run until then (safely — a failed attempt changes
+   > nothing). Full sequence: **[docs/MIGRATION.md](docs/MIGRATION.md)**.
 
 3. **Google sign-in (optional).** Supabase dashboard → Authentication → Sign In / Providers →
    Google, with a client ID and secret from the [Google Cloud console](https://console.cloud.google.com/apis/credentials).
@@ -105,6 +136,11 @@ absent and where to find it — so you can follow that instead of this list.
 
    `0004` refuses to run while anything is still unclaimed, so it's safe to try early. Export
    your registry first with the **Export JSON** button if you want a copy on disk.
+
+   Then set a **vault PIN** on the Vault page and press **Encrypt saved keys** on the dashboard:
+   anon keys predate the vault and sit in a plaintext column. The sweep reads from either
+   location, so nothing breaks while you do it. Finish with `0006_drop_plaintext_keys.sql`,
+   which deletes that column and refuses to run while anything is still in it.
 
 6. **Per-project keep-alive table (Supabase, optional).** Run `supabase/keep_alive.sql` in each
    project you want kept alive, so every ping is a real Postgres query rather than an
@@ -150,5 +186,6 @@ they're good first issues. The reasoning for each is at the bottom of `docs/PROV
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | The adapter contract, data model, migration path, scheduler |
 | [docs/SECURITY.md](docs/SECURITY.md) | Threat model, key hierarchy, and the limits stated plainly |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | The nine phases and how each one is verified |
+| [docs/MIGRATION.md](docs/MIGRATION.md) | The exact order of SQL migrations and app-side steps |
 
 MIT licensed.
