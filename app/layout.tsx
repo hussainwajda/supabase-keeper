@@ -1,12 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Fira_Code, Fira_Sans } from "next/font/google";
-import { cookies } from "next/headers";
 import { DatabaseZapIcon, PlusIcon } from "lucide-react";
-import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth";
+import { currentUser } from "@/lib/supabase/server";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
-import { logout } from "@/app/actions";
+import { AccountMenu } from "@/components/auth/account-menu";
 import "./globals.css";
 
 const firaSans = Fira_Sans({
@@ -30,7 +29,7 @@ export const metadata: Metadata = {
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const authed = await verifySessionToken((await cookies()).get(SESSION_COOKIE)?.value);
+  const user = await currentUser();
 
   return (
     <html lang="en" className={`${firaSans.variable} ${firaCode.variable}`} suppressHydrationWarning>
@@ -46,7 +45,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 Keepstack
               </Link>
 
-              {authed && (
+              {user && (
                 <nav className="flex items-center gap-1" aria-label="Main">
                   <Button asChild variant="ghost" size="sm">
                     <Link href="/">Projects</Link>
@@ -60,11 +59,15 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                       Project
                     </Link>
                   </Button>
-                  <form action={logout} className="ml-1">
-                    <Button variant="ghost" size="sm" type="submit">
-                      Log out
-                    </Button>
-                  </form>
+                  <AccountMenu
+                    email={user.email ?? "signed in"}
+                    name={
+                      (user.user_metadata?.full_name as string | undefined) ??
+                      (user.user_metadata?.name as string | undefined) ??
+                      null
+                    }
+                    avatarUrl={(user.user_metadata?.avatar_url as string | undefined) ?? null}
+                  />
                 </nav>
               )}
             </div>

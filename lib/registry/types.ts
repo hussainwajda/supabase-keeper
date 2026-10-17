@@ -2,6 +2,8 @@ import type { Lifecycle, ProviderId, Strategy } from "@/lib/providers/types";
 
 export type Account = {
   id: string;
+  /** Nullable only until migration 0004 enforces ownership. */
+  user_id: string | null;
   provider: ProviderId;
   email: string;
   label: string | null;
@@ -15,6 +17,8 @@ export type Account = {
 
 export type Project = {
   id: string;
+  /** Nullable only until migration 0004 enforces ownership. */
+  user_id: string | null;
   account_id: string | null;
   provider: ProviderId;
   external_id: string;

@@ -1,15 +1,12 @@
-import { NextResponse, type NextRequest } from "next/server";
-import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth";
+import type { NextRequest } from "next/server";
+import { updateSession } from "@/lib/supabase/middleware";
 
 export async function middleware(req: NextRequest) {
-  if (await verifySessionToken(req.cookies.get(SESSION_COOKIE)?.value)) return NextResponse.next();
-  const url = req.nextUrl.clone();
-  url.pathname = "/login";
-  url.search = "";
-  return NextResponse.redirect(url);
+  return updateSession(req);
 }
 
 export const config = {
-  // Everything except the login page, the cron endpoint (has its own secret) and static assets.
-  matcher: ["/((?!login|api/cron|_next/static|_next/image|favicon.ico).*)"],
+  // Skip static assets and image files; everything else goes through session refresh so
+  // tokens stay fresh even on pages that don't read the user.
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)"],
 };

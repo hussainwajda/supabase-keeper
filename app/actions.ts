@@ -1,17 +1,30 @@
 "use server";
 
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { SESSION_COOKIE, createSessionToken, safeEqual, verifySessionToken } from "@/lib/auth";
-import { db, forWrite, type Project } from "@/lib/registry";
+import { supabaseServer, currentUser } from "@/lib/supabase/server";
+import { forWrite, type Project } from "@/lib/registry";
+import { claimLegacyRows } from "@/lib/registry/claim";
 import { getProvider, parseIdentifier } from "@/lib/providers/registry";
 import { PROVIDER_IDS, type ProviderId } from "@/lib/providers/types";
 import { pingProject, pingProjects } from "@/lib/ping";
 
-async function requireAuth() {
-  const jar = await cookies();
-  if (!(await verifySessionToken(jar.get(SESSION_COOKIE)?.value))) redirect("/login");
+/**
+ * Every action starts here. Returns the user id, so writes can stamp ownership — RLS would
+ * reject a row whose `user_id` doesn't match the caller anyway, but setting it explicitly is
+ * what makes the insert succeed in the first place.
+ */
+async function requireUser(): Promise<string> {
+  const user = await currentUser();
+  if (!user) redirect("/login");
+  return user.id;
+}
+
+/** Id and email, for the few actions that need to check who is acting. */
+async function requireIdentity(): Promise<{ id: string; email: string | null }> {
+  const user = await currentUser();
+  if (!user) redirect("/login");
+  return { id: user.id, email: user.email ?? null };
 }
 
 const str = (fd: FormData, k: string) => {
@@ -23,28 +36,6 @@ function asProvider(value: string | null): ProviderId {
   return PROVIDER_IDS.includes(value as ProviderId) ? (value as ProviderId) : "supabase";
 }
 
-// ---------- auth ----------
-
-export async function login(_: string | null, fd: FormData): Promise<string | null> {
-  const expected = process.env.APP_PASSWORD;
-  if (!expected) return "APP_PASSWORD is not configured on the server.";
-  if (!safeEqual(str(fd, "password") ?? "", expected)) return "Wrong password.";
-  const { token, expires } = await createSessionToken();
-  (await cookies()).set(SESSION_COOKIE, token, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "lax",
-    path: "/",
-    expires,
-  });
-  redirect("/");
-}
-
-export async function logout() {
-  (await cookies()).delete(SESSION_COOKIE);
-  redirect("/login");
-}
-
 // ---------- search ----------
 
 /**
@@ -52,16 +43,27 @@ export async function logout() {
  * Called from the board's search box as the user types.
  */
 export async function parsePastedIdentifier(input: string) {
-  await requireAuth();
+  await requireUser();
   return parseIdentifier(input);
+}
+
+// ---------- legacy claim ----------
+
+export async function claimLegacy() {
+  const { id, email } = await requireIdentity();
+  await claimLegacyRows(id, email);
+  revalidatePath("/", "layout");
 }
 
 // ---------- accounts ----------
 
 export async function saveAccount(fd: FormData) {
-  await requireAuth();
+  const userId = await requireUser();
+  const db = await supabaseServer();
   const id = str(fd, "id");
+
   const row = {
+    user_id: userId,
     provider: asProvider(str(fd, "provider")),
     email: str(fd, "email"),
     label: str(fd, "label"),
@@ -69,18 +71,20 @@ export async function saveAccount(fd: FormData) {
     notes: str(fd, "notes"),
   };
   if (!row.email) throw new Error("Email is required");
+
   const payload = await forWrite("accounts", row as Record<string, unknown>);
-  const q = id
-    ? db().from("accounts").update(payload).eq("id", id)
-    : db().from("accounts").insert(payload);
-  const { error } = await q;
+  const { error } = id
+    ? await db.from("accounts").update(payload).eq("id", id)
+    : await db.from("accounts").insert(payload);
   if (error) throw error;
+
   revalidatePath("/", "layout");
 }
 
 export async function deleteAccount(fd: FormData) {
-  await requireAuth();
-  const { error } = await db().from("accounts").delete().eq("id", str(fd, "id"));
+  await requireUser();
+  const db = await supabaseServer();
+  const { error } = await db.from("accounts").delete().eq("id", str(fd, "id"));
   if (error) throw error;
   revalidatePath("/", "layout");
 }
@@ -88,7 +92,8 @@ export async function deleteAccount(fd: FormData) {
 // ---------- projects ----------
 
 export async function saveProject(_: string | null, fd: FormData): Promise<string | null> {
-  await requireAuth();
+  const userId = await requireUser();
+  const db = await supabaseServer();
   const id = str(fd, "id");
   const provider = asProvider(str(fd, "provider"));
   const adapter = getProvider(provider);
@@ -111,6 +116,7 @@ export async function saveProject(_: string | null, fd: FormData): Promise<strin
   }
 
   const row: Partial<Project> & Record<string, unknown> = {
+    user_id: userId,
     provider,
     external_id: externalId,
     // Keep the legacy column in sync until migration 0006 drops it.
@@ -137,8 +143,8 @@ export async function saveProject(_: string | null, fd: FormData): Promise<strin
 
   const payload = await forWrite("projects", row);
   const { error } = id
-    ? await db().from("projects").update(payload).eq("id", id)
-    : await db().from("projects").insert(payload);
+    ? await db.from("projects").update(payload).eq("id", id)
+    : await db.from("projects").insert(payload);
   if (error) {
     return error.code === "23505"
       ? `A ${adapter.name} project with identifier ${externalId} already exists.`
@@ -150,23 +156,27 @@ export async function saveProject(_: string | null, fd: FormData): Promise<strin
 }
 
 export async function deleteProject(fd: FormData) {
-  await requireAuth();
-  const { error } = await db().from("projects").delete().eq("id", str(fd, "id"));
+  await requireUser();
+  const db = await supabaseServer();
+  const { error } = await db.from("projects").delete().eq("id", str(fd, "id"));
   if (error) throw error;
   revalidatePath("/", "layout");
   redirect("/");
 }
 
 export async function pingNow(fd: FormData) {
-  await requireAuth();
-  const { data, error } = await db().from("projects").select("*").eq("id", str(fd, "id")).single();
+  await requireUser();
+  const db = await supabaseServer();
+  // Selected through the user client, so RLS makes it impossible to ping someone else's
+  // project by guessing an id.
+  const { data, error } = await db.from("projects").select("*").eq("id", str(fd, "id")).single();
   if (error) throw error;
   await pingProject(data as Project);
   revalidatePath("/", "layout");
 }
 
 export async function pingAll() {
-  await requireAuth();
-  await pingProjects({ force: true });
+  const userId = await requireUser();
+  await pingProjects({ force: true, userId });
   revalidatePath("/", "layout");
 }

@@ -1,5 +1,6 @@
 import "server-only";
-import { db, forWrite, keepAliveProjects, type Project } from "@/lib/registry";
+import { supabaseService } from "@/lib/supabase/service";
+import { forWrite, keepAliveProjects, type Project } from "@/lib/registry";
 import { getProvider } from "@/lib/providers/registry";
 import type { PingOutcome, ProjectRef, Strategy } from "@/lib/providers/types";
 
@@ -87,8 +88,8 @@ export async function pingProject(p: Project): Promise<PingResult> {
   ]);
 
   await Promise.all([
-    db().from("projects").update(projectUpdate).eq("id", p.id),
-    db().from("ping_logs").insert(logInsert),
+    supabaseService().from("projects").update(projectUpdate).eq("id", p.id),
+    supabaseService().from("ping_logs").insert(logInsert),
   ]);
 
   return {
@@ -113,8 +114,11 @@ export async function pingProject(p: Project): Promise<PingResult> {
 export async function pingProjects({
   force = false,
   provider,
-}: { force?: boolean; provider?: string } = {}): Promise<PingResult[]> {
-  const all = await keepAliveProjects();
+  userId,
+}: { force?: boolean; provider?: string; userId?: string } = {}): Promise<PingResult[]> {
+  // `userId` is set when a signed-in user presses "Ping all now", so one user can never
+  // trigger pings across someone else's projects. The cron omits it and covers everybody.
+  const all = await keepAliveProjects(userId);
   const targets = all
     .filter((p) => !provider || p.provider === provider)
     .filter((p) => force || isDue(p));
@@ -122,7 +126,7 @@ export async function pingProjects({
   const results = await Promise.all(targets.map(pingProject));
 
   // Housekeeping: keep 90 days of logs.
-  await db()
+  await supabaseService()
     .from("ping_logs")
     .delete()
     .lt("created_at", new Date(Date.now() - 90 * DAY_MS).toISOString());

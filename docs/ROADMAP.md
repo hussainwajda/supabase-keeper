@@ -35,7 +35,7 @@ the Tailwind migration briefly made the theme class-only.
 
 ---
 
-## ☐ Phase 1 — Supabase Auth with Google, and multi-user
+## ☑ Phase 1 — Supabase Auth with Google, and multi-user
 
 Where it stops being a single-password personal tool.
 
@@ -48,6 +48,23 @@ Where it stops being a single-password personal tool.
 account in a private window — it sees *nothing* of yours. Try reading another user's row directly
 through the anon client; RLS refuses.
 **Must not break:** the cron, which moves to a per-user loop under the service role.
+
+**Built and verified 2026-10-17, with one gap.** Verified locally: the setup gate (every route
+redirects to `/setup` until the registry env is complete), the auth gate (every private route
+redirects to `/login` preserving `?next=`), the login page renders Google + email/password, the
+cron still runs under the service role (401 without `CRON_SECRET`, and a forced sweep produced
+the same 3 results as Phase 0), and the `42703` probe the claim banner relies on returns exactly
+what the code expects.
+
+**Not yet verified, and it needs you:** actual sign-in, the claim flow, and RLS enforcement. All
+three need the registry's **anon key**, which isn't in `.env` and can't be derived from the
+service-role key. Migration `0003` also has to be run by hand. Steps are in the README and on
+the `/setup` page.
+
+Phase 1 also added two things not in the original plan, both from testing:
+a **`/setup` page** so a fresh clone gets an actionable screen instead of a stack trace on every
+request, and `currentUser()` returning null rather than throwing when the env is incomplete —
+without it the root layout crashed the setup page it was supposed to be showing.
 
 ---
 

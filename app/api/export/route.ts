@@ -1,6 +1,5 @@
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth";
+import { currentUser } from "@/lib/supabase/server";
 import { exportRegistry } from "@/lib/registry";
 
 export const dynamic = "force-dynamic";
@@ -10,7 +9,7 @@ export const dynamic = "force-dynamic";
  * Secrets are excluded by `exportRegistry()`, so the downloaded file is safe to keep on disk.
  */
 export async function GET() {
-  if (!(await verifySessionToken((await cookies()).get(SESSION_COOKIE)?.value))) {
+  if (!(await currentUser())) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 

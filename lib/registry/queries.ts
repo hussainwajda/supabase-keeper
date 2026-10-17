@@ -1,15 +1,26 @@
 import "server-only";
-import { db } from "./client";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { supabaseServer } from "@/lib/supabase/server";
+import { supabaseService } from "@/lib/supabase/service";
 import type { Account, PingLog, Project, ProjectWithAccount } from "./types";
+
+/**
+ * Every read and write below runs as the signed-in user by default, so RLS in Postgres is
+ * what scopes the data — not a `.eq("user_id", …)` we might forget. The service client is
+ * passed explicitly by the two callers that genuinely need to bypass RLS: the nightly sweep
+ * and the one-time legacy claim.
+ */
+async function client(override?: SupabaseClient): Promise<SupabaseClient> {
+  return override ?? (await supabaseServer());
+}
 
 /**
  * Normalise a row read from either schema version.
  *
  * Migration 0002 is additive, but it's a SQL file the user runs by hand — so between
- * deploying Phase 0 and running it, these columns don't exist yet. Reads degrade to the
- * pre-0002 shape (every project is Supabase, `external_id` comes from `ref`) so the
- * dashboard still renders. Writes genuinely need the new columns; `schemaStatus()` below
- * surfaces that as a banner instead of a 500.
+ * deploying and running it, these columns don't exist yet. Reads degrade to the pre-0002
+ * shape (every project is Supabase, `external_id` comes from `ref`) so the dashboard still
+ * renders. Writes narrow instead; see `forWrite` below.
  */
 function normalizeProject(row: Record<string, unknown>): Project {
   const metadata = (row.metadata as Record<string, unknown> | null) ?? {};
@@ -37,14 +48,17 @@ function normalizeAccount(row: Record<string, unknown>): Account {
   } as Account;
 }
 
-export async function listAccounts(): Promise<Account[]> {
-  const { data, error } = await db().from("accounts").select("*").order("created_at");
+export async function listAccounts(db?: SupabaseClient): Promise<Account[]> {
+  const { data, error } = await (await client(db))
+    .from("accounts")
+    .select("*")
+    .order("created_at");
   if (error) throw error;
   return (data as Record<string, unknown>[]).map(normalizeAccount);
 }
 
-export async function listProjects(): Promise<ProjectWithAccount[]> {
-  const { data, error } = await db()
+export async function listProjects(db?: SupabaseClient): Promise<ProjectWithAccount[]> {
+  const { data, error } = await (await client(db))
     .from("projects")
     .select("*, account:accounts(*)")
     .order("name");
@@ -59,8 +73,11 @@ export async function listProjects(): Promise<ProjectWithAccount[]> {
   });
 }
 
-export async function getProject(id: string): Promise<ProjectWithAccount | null> {
-  const { data, error } = await db()
+export async function getProject(
+  id: string,
+  db?: SupabaseClient,
+): Promise<ProjectWithAccount | null> {
+  const { data, error } = await (await client(db))
     .from("projects")
     .select("*, account:accounts(*)")
     .eq("id", id)
@@ -75,8 +92,12 @@ export async function getProject(id: string): Promise<ProjectWithAccount | null>
   };
 }
 
-export async function recentLogs(projectId: string, limit = 15): Promise<PingLog[]> {
-  const { data, error } = await db()
+export async function recentLogs(
+  projectId: string,
+  limit = 15,
+  db?: SupabaseClient,
+): Promise<PingLog[]> {
+  const { data, error } = await (await client(db))
     .from("ping_logs")
     .select("*")
     .eq("project_id", projectId)
@@ -90,9 +111,18 @@ export async function recentLogs(projectId: string, limit = 15): Promise<PingLog
   })) as PingLog[];
 }
 
-/** Every project with keep-alive enabled, for the nightly sweep. */
-export async function keepAliveProjects(): Promise<Project[]> {
-  const { data, error } = await db().from("projects").select("*").eq("keep_alive", true);
+/**
+ * Every project with keep-alive enabled. Service role on purpose: the nightly sweep has no
+ * user session and must cover everybody.
+ *
+ * `userId` narrows it in SQL, used when a signed-in user presses "Ping all now" — so one
+ * user's action never pulls another user's rows into this process at all.
+ */
+export async function keepAliveProjects(userId?: string): Promise<Project[]> {
+  let query = supabaseService().from("projects").select("*").eq("keep_alive", true);
+  if (userId) query = query.eq("user_id", userId);
+
+  const { data, error } = await query;
   if (error) throw error;
   return (data as Record<string, unknown>[]).map(normalizeProject);
 }
@@ -100,15 +130,19 @@ export async function keepAliveProjects(): Promise<Project[]> {
 /**
  * Has migration 0002 been applied?
  *
- * Probes for one of the new columns. Cached per process — the answer only changes when the
- * user runs the SQL, and a stale `false` costs one banner until the next cold start.
+ * Probes for one of the new columns with the service role, so the answer doesn't depend on
+ * RLS or on there being any rows the current user can see. Cached per process — the answer
+ * only changes when the user runs the SQL.
  */
 let migrationApplied: boolean | null = null;
 
 export async function schemaStatus(): Promise<{ migration0002: boolean }> {
   if (migrationApplied !== null) return { migration0002: migrationApplied };
-  const { error } = await db().from("projects").select("provider,external_id,metadata").limit(1);
-  // 42703 = undefined_column. Any other error is a real problem and should surface elsewhere.
+  const { error } = await supabaseService()
+    .from("projects")
+    .select("provider,external_id,metadata")
+    .limit(1);
+  // 42703 = undefined_column. Any other error is a real problem and surfaces elsewhere.
   migrationApplied = !(error && error.code === "42703");
   return { migration0002: migrationApplied };
 }
@@ -124,11 +158,13 @@ export function slotsUsed(projects: { account_id: string | null }[]): Record<str
 
 /**
  * Full registry export. The safety net that has to exist before any risky migration —
- * secrets are deliberately excluded, so this file is safe to keep on disk.
+ * secrets are deliberately excluded, so this file is safe to keep on disk. Runs as the user,
+ * so you can only ever export your own rows.
  */
 export async function exportRegistry() {
-  const [accounts, projects] = await Promise.all([listAccounts(), listProjects()]);
-  const { data: logs, error } = await db()
+  const db = await supabaseServer();
+  const [accounts, projects] = await Promise.all([listAccounts(db), listProjects(db)]);
+  const { data: logs, error } = await db
     .from("ping_logs")
     .select("*")
     .order("created_at", { ascending: false })
@@ -165,9 +201,9 @@ const POST_0002_COLUMNS = {
 /**
  * Drop the post-0002 columns from a write when the migration hasn't been applied yet.
  *
- * Without this, Phase 0 would break the one thing that already worked — pinging — by
- * inserting a `strategy` column that doesn't exist. Reads normalise, writes narrow, and the
- * dashboard banner tells the user how to get the full feature set.
+ * Without this, the multi-provider code would break the one thing that already worked —
+ * pinging — by inserting a `strategy` column that doesn't exist. Reads normalise, writes
+ * narrow, and the dashboard banner tells the user how to get the full feature set.
  */
 export async function forWrite<T extends Record<string, unknown>>(
   table: keyof typeof POST_0002_COLUMNS,

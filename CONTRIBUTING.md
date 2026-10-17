@@ -7,7 +7,7 @@ architecture exists specifically to make that a small, self-contained change.
 
 ```bash
 pnpm install
-cp .env.example .env.local   # fill in SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, APP_PASSWORD, SESSION_SECRET
+cp .env.example .env.local   # fill in the three NEXT_PUBLIC_SUPABASE_* / SUPABASE_SERVICE_ROLE_KEY values
 pnpm dev
 ```
 

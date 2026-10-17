@@ -3,6 +3,8 @@ import { DownloadIcon } from "lucide-react";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { listAccounts, listProjects, schemaStatus, slotsUsed, toSafeProject } from "@/lib/registry";
+import { claimAvailable } from "@/lib/registry/claim";
+import { currentUser } from "@/lib/supabase/server";
 import { activeProviders, getProvider } from "@/lib/providers/registry";
 import type { Policy, ProviderId } from "@/lib/providers/types";
 import { ProjectBoard, type BoardProject, type PolicyMap } from "@/components/project-board";
@@ -12,6 +14,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { pingAll, parsePastedIdentifier } from "@/app/actions";
 import { daysUntilPauseRisk, isUrgentRisk } from "@/lib/format";
 import { MigrationNotice } from "@/components/migration-notice";
+import { ClaimNotice } from "@/components/claim-notice";
 
 export const dynamic = "force-dynamic";
 
@@ -41,10 +44,12 @@ function Stat({
 }
 
 export default async function Dashboard() {
-  const [projects, accounts, schema] = await Promise.all([
+  const user = await currentUser();
+  const [projects, accounts, schema, claim] = await Promise.all([
     listProjects(),
     listAccounts(),
     schemaStatus(),
+    claimAvailable(user?.email ?? null),
   ]);
 
   const migrationSql = schema.migration0002
@@ -115,6 +120,7 @@ export default async function Dashboard() {
       </div>
 
       {migrationSql && <MigrationNotice sql={migrationSql} />}
+      {claim.allowed && <ClaimNotice orphans={claim.orphans} />}
 
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <Stat value={accounts.length} label="Accounts" />
@@ -129,7 +135,7 @@ export default async function Dashboard() {
         />
       </div>
 
-      {accounts.length === 0 ? (
+      {accounts.length === 0 && !claim.allowed ? (
         <Card>
           <CardContent className="grid gap-2">
             <h2 className="text-base font-semibold">Start by adding an account</h2>

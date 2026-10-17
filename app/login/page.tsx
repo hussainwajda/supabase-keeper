@@ -1,36 +1,50 @@
-"use client";
-
-import { useActionState } from "react";
+import Link from "next/link";
 import { DatabaseZapIcon } from "lucide-react";
-import { login } from "@/app/actions";
-import { SubmitButton } from "@/components/buttons";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Field } from "@/components/ui/label";
+import { LoginForm } from "@/components/auth/login-form";
 
-export default function LoginPage() {
-  const [error, action] = useActionState(login, null);
+export const dynamic = "force-dynamic";
+
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string; error?: string }>;
+}) {
+  const { next, error } = await searchParams;
+  const googleConfigured = process.env.KEEPSTACK_DISABLE_GOOGLE !== "true";
 
   return (
-    <div className="mx-auto mt-[12vh] max-w-sm">
-      <Card>
-        <CardContent className="grid gap-4">
-          <div className="grid gap-1">
-            <DatabaseZapIcon className="text-accent size-5" aria-hidden />
-            <h1 className="text-lg font-semibold tracking-tight">Sign in to Keepstack</h1>
-            <p className="text-muted-foreground text-[0.8125rem]">
-              Enter the APP_PASSWORD you set in your environment.
-            </p>
-          </div>
+    <div className="mx-auto mt-[10vh] max-w-sm">
+      <div className="mb-5 grid gap-1.5 text-center">
+        <DatabaseZapIcon className="text-accent mx-auto size-6" aria-hidden />
+        <h1 className="text-lg font-semibold tracking-tight">Sign in to Keepstack</h1>
+        <p className="text-muted-foreground text-[0.8125rem]">
+          Every free-tier database you own, in one place.
+        </p>
+      </div>
 
-          <form action={action} className="grid gap-3">
-            <Field label="Password" htmlFor="password" error={error}>
-              <Input id="password" type="password" name="password" autoFocus required autoComplete="current-password" />
-            </Field>
-            <SubmitButton pending="Signing in…">Sign in</SubmitButton>
-          </form>
+      <Card>
+        <CardContent>
+          <LoginForm
+            next={next ?? "/"}
+            initialError={error ?? null}
+            googleEnabled={googleConfigured}
+          />
         </CardContent>
       </Card>
+
+      <p className="text-muted-foreground mt-4 text-center text-xs">
+        Keepstack stores credentials.{" "}
+        <Link
+          href="https://github.com/hussainwajda/keepstack/blob/main/docs/SECURITY.md"
+          className="underline underline-offset-4"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Read how they&apos;re protected
+        </Link>{" "}
+        — including the limits.
+      </p>
     </div>
   );
 }

@@ -15,9 +15,10 @@ remember signing up for. Keepstack answers the three questions that actually hur
   after a PIN or an emailed code — the way GitHub makes you re-authenticate before something
   destructive.
 
-> **Status: Phase 0 of 9.** Keepstack is the multi-provider successor to `supabase-keeper`.
-> Supabase works end to end today; Neon, MongoDB Atlas, Upstash and Appwrite land in
-> Phases 4-7. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status: Phase 1 of 9.** Keepstack is the multi-provider successor to `supabase-keeper`.
+> Supabase works end to end today, with real accounts and row level security; the encrypted
+> vault is Phase 2, and Neon, MongoDB Atlas, Upstash and Appwrite land in Phases 4-7.
+> See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ---
 
@@ -66,18 +67,54 @@ Vercel account. If you deploy Keepstack for other people, tell them.
 
 ## Setup
 
-1. **Registry database.** Pick one Supabase project to hold Keepstack's tables. Run
-   `supabase/migrations/0001_initial.sql`, then `0002_multi_provider.sql`, in its SQL editor.
-   The nightly sweep queries this database, so the registry keeps itself active.
-2. **Per-project keep-alive table (Supabase, optional).** Run `supabase/keep_alive.sql` in each
+Keepstack uses one Supabase project for two jobs: storing its own tables, and signing you in.
+If any required variable is missing, the app serves a `/setup` page that names exactly what's
+absent and where to find it — so you can follow that instead of this list.
+
+1. **Environment.** Copy `.env.example` to `.env.local` and fill in three values from your
+   registry project's **Project Settings → API Keys**:
+
+   | | |
+   | --- | --- |
+   | `NEXT_PUBLIC_SUPABASE_URL` | the project URL |
+   | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | the anon / publishable key — safe in the browser, because RLS is what protects your rows |
+   | `SUPABASE_SERVICE_ROLE_KEY` | service_role. **Never** prefix this with `NEXT_PUBLIC_` |
+
+   Plus `CRON_SECRET` (`openssl rand -hex 32`).
+
+2. **Migrations.** In that project's SQL editor, run `supabase/migrations/` in order:
+   `0001`, `0002`, `0003`. Stop there for now — `0004` comes after step 5.
+
+3. **Google sign-in (optional).** Supabase dashboard → Authentication → Sign In / Providers →
+   Google, with a client ID and secret from the [Google Cloud console](https://console.cloud.google.com/apis/credentials).
+   Add these to the project's redirect allow-list:
+
+   ```
+   http://localhost:3000/auth/callback
+   https://<your-app>/auth/callback
+   ```
+
+   Until it's configured, set `KEEPSTACK_DISABLE_GOOGLE=true` and use email + password.
+
+4. **Sign in.** Google, or create an email + password account.
+
+5. **Upgrading from supabase-keeper?** Migration `0003` turns on row level security, and rows
+   created before sign-in existed have no owner — so the dashboard will look empty. It isn't:
+   RLS hides unowned rows. Set `KEEPSTACK_ALLOW_LEGACY_CLAIM=true`, reload, and press
+   **Claim these rows**. Then run `0004_require_owner.sql` and remove the flag.
+
+   `0004` refuses to run while anything is still unclaimed, so it's safe to try early. Export
+   your registry first with the **Export JSON** button if you want a copy on disk.
+
+6. **Per-project keep-alive table (Supabase, optional).** Run `supabase/keep_alive.sql` in each
    project you want kept alive, so every ping is a real Postgres query rather than an
    API-gateway hit. The SQL is copyable from the project form. Phase 3 makes this unnecessary
    for accounts with a personal access token.
-3. **Environment.** Copy `.env.example` to `.env.local` and fill it in.
-4. **Deploy.** `vercel deploy --prod` (or import the repo), then add the env vars. `vercel.json`
+
+7. **Deploy.** `vercel deploy --prod` (or import the repo), then add the env vars. `vercel.json`
    registers the daily cron at 06:00 UTC; Vercel sends `Authorization: Bearer $CRON_SECRET`
-   automatically.
-5. Log in, add your accounts, then add projects.
+   automatically. Set `NEXT_PUBLIC_SITE_URL` in production so OAuth links don't point at an
+   internal proxy host.
 
 ### Local development
 
