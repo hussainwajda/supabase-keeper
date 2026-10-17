@@ -23,6 +23,8 @@ import { HealthPanel } from "@/components/providers/health-panel";
 import { ConnectionStrings } from "@/components/providers/connection-strings";
 import { refreshStatus, refreshUsage } from "@/app/providers/actions";
 import { UsageMeters } from "@/components/providers/usage-meters";
+import { PlanLimits, hasPlanLimits } from "@/components/providers/plan-limits";
+import { AtlasSetup } from "@/components/providers/atlas-setup";
 import { latestUsage, usageHistory } from "@/lib/usage";
 import { deleteProject, pingNow } from "@/app/actions";
 import { cn } from "@/lib/utils";
@@ -222,6 +224,25 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
               />
             </CardContent>
           </Card>
+
+          {project.provider === "mongodb" && (
+            <Card>
+              <CardContent>
+                <AtlasSetup hasConnectionString={storedByKind.has("connection_string")} />
+              </CardContent>
+            </Card>
+          )}
+
+          {hasPlanLimits(project.provider, project.metadata.instance_size as string | null) && (
+            <Card>
+              <CardContent>
+                <PlanLimits
+                  provider={project.provider}
+                  instanceSize={project.metadata.instance_size as string | null}
+                />
+              </CardContent>
+            </Card>
+          )}
 
           {adapter.capabilities.watch && (
             <Card>

@@ -47,7 +47,23 @@ export function ProjectBoard({
     setMatch(value.trim() ? await parseAction(value) : null);
   }
 
-  const exact = match ? projects.find((p) => p.provider === match.provider && p.external_id === match.externalId) : undefined;
+  /**
+   * Match a parsed identifier to a registered project.
+   *
+   * Three ways, because one provider can't always produce its canonical id from a paste.
+   * An Atlas cluster is identified as `<projectId>/<clusterName>`, but an SRV connection
+   * string carries only the host — unique per Atlas project, and stored during discovery as
+   * `metadata.srv_host`, so it resolves too.
+   */
+  const exact = match
+    ? projects.find((p) => {
+        if (p.provider !== match.provider) return false;
+        if (p.external_id === match.externalId) return true;
+        if ((p.metadata?.srv_host as string | undefined) === match.externalId) return true;
+        // A cluster name alone, when it is unambiguous within this provider.
+        return p.external_id.endsWith(`/${match.externalId}`);
+      })
+    : undefined;
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();

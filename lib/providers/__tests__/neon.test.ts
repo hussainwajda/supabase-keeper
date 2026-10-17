@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { neonAdapter } from "../neon";
 import { parseIdentifier } from "../registry";
-import { daysOfHeadroom, usageFraction, type UsageRow } from "../../usage";
+import { daysOfHeadroom, usageFraction, utcDay, type UsageRow } from "../../usage";
 
 const PROJECT = "fragrant-dew-12345678";
 
@@ -116,6 +116,29 @@ describe("connection strings", () => {
     );
     assert.ok(out.direct!.includes(encodeURIComponent("p@ss:w/rd")));
     assert.ok(!out.direct!.includes("p@ss:w/rd"));
+  });
+});
+
+describe("the captured_on day key", () => {
+  // This has to match migration 0007's column default, `(now() AT TIME ZONE 'UTC')::date`.
+  // It is the upsert's conflict target, so "one reading per day" only holds if the app and
+  // the database agree on which day it is.
+  test("is the UTC calendar day", () => {
+    assert.equal(utcDay("2026-10-17T23:59:59.999Z"), "2026-10-17");
+    assert.equal(utcDay("2026-10-18T00:00:00.000Z"), "2026-10-18");
+  });
+
+  test("ignores the host timezone", () => {
+    // 2026-10-18T02:30 in +05:30 is still 2026-10-17 in UTC. A local-date derivation would
+    // return the 18th here and silently create two rows for one day.
+    assert.equal(utcDay("2026-10-18T02:30:00.000+05:30"), "2026-10-17");
+    assert.equal(utcDay("2026-10-17T20:00:00.000-07:00"), "2026-10-18");
+  });
+
+  test("is stable across repeated calls on the same instant", () => {
+    const iso = new Date().toISOString();
+    assert.equal(utcDay(iso), utcDay(iso));
+    assert.match(utcDay(iso), /^\d{4}-\d{2}-\d{2}$/);
   });
 });
 

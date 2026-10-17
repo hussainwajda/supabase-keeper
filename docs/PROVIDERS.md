@@ -115,7 +115,7 @@ Sources: [Neon API](https://neon.com/docs/reference/api),
 
 ---
 
-## 3. MongoDB Atlas (M0) — `mongodb` — Phase 5
+## 3. MongoDB Atlas (M0) — `mongodb` ✅ implemented
 
 The hardest adapter, and the one that most justifies the project. Atlas is the only provider where
 keeping alive needs a **real database driver connection**, because the Atlas Data API was removed
@@ -161,6 +161,12 @@ prevent the pause.
 user SRV connection string incl. password (server — must be, the cron uses it), app database
 password (personal).
 
+**Resolved in Phase 5.** The version pin is `2025-03-12` with a fallback walk on 406; identity is
+`<groupId>/<clusterName>` because a user with three free clusters usually has three Atlas projects
+each holding a `Cluster0`; a pasted SRV host resolves via `metadata.srv_host`, captured during
+discovery from `connectionStrings.standardSrv`; and a socket failure never sets `lifecycle` —
+only the Admin API's `paused` field does.
+
 Sources: [free cluster limits](https://www.mongodb.com/docs/atlas/reference/free-shared-limitations/),
 [pause/resume](https://www.mongodb.com/docs/atlas/pause-terminate-cluster/),
 [service account auth](https://www.mongodb.com/developer/products/mongodb/mongodb-atlas-authentication-using-service-accounts-oauth),
@@ -168,7 +174,7 @@ Sources: [free cluster limits](https://www.mongodb.com/docs/atlas/reference/free
 
 ---
 
-## 4. Upstash (Redis) — `upstash` — Phase 6
+## 4. Upstash (Redis) — `upstash` — Phase 6 (next)
 
 The cheapest ping in the set and a clean API. Also the clearest example of "archived, not paused".
 

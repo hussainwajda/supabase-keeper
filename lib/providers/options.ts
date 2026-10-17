@@ -40,9 +40,9 @@ const IDENTIFIER: Record<ProviderId, { label: string; hint: string; placeholder:
     placeholder: "fragrant-dew-12345678",
   },
   mongodb: {
-    label: "Cluster name",
-    hint: "The cluster name in Atlas, or paste its SRV connection string.",
-    placeholder: "Cluster0",
+    label: "Cluster identifier",
+    hint: "Easiest is to add a service account to this cluster's account and sync. Otherwise paste its SRV connection string, a console URL, or <projectId>/<clusterName>.",
+    placeholder: "mongodb+srv://cluster0.ab12c.mongodb.net",
   },
   upstash: {
     label: "Database ID or endpoint",

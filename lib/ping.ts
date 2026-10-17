@@ -3,6 +3,7 @@ import { supabaseService } from "@/lib/supabase/service";
 import { forWrite, keepAliveProjects, type Project } from "@/lib/registry";
 import { resolveServerCredentials } from "@/lib/vault/resolve";
 import { vaultConfigured } from "@/lib/crypto/env";
+import { mapWithDeadline } from "@/lib/concurrency";
 import { getProvider } from "@/lib/providers/registry";
 import type { PingOutcome, ProjectRef, Strategy } from "@/lib/providers/types";
 
@@ -139,18 +140,18 @@ export async function pingProjects({
   const candidates = all.filter((p) => !provider || p.provider === provider);
 
   const { captureUsage } = await import("@/lib/usage");
-  const results: PingResult[] = [];
 
-  for (const p of candidates) {
+  /** One project, routed by its provider's strategy. */
+  async function sweepOne(p: Project): Promise<PingResult | null> {
     const adapter = getProvider(p.provider);
 
     if (adapter.policy.strategy === "watch") {
       // Usage is cheap and the signal is a trend, so read it daily rather than on an
       // interval. `force` changes nothing here — there is no clock to reset.
-      if (!force && !isDue({ ...p, interval_days: 1 })) continue;
+      if (!force && !isDue({ ...p, interval_days: 1 })) return null;
 
       const watched = await captureUsage(p);
-      results.push({
+      return {
         projectId: watched.projectId,
         provider: watched.provider,
         name: watched.name,
@@ -160,13 +161,60 @@ export async function pingProjects({
         durationMs: 0,
         error: watched.error,
         via: watched.status === "ok" ? `usage read (${watched.metrics} metrics)` : "usage read",
-      });
-      continue;
+      };
     }
 
-    if (!force && !isDue(p)) continue;
-    results.push(await pingProject(p));
+    if (!force && !isDue(p)) return null;
+    return pingProject(p);
   }
+
+  // Grouped by provider, each group with its own deadline, so one provider's outage can't eat
+  // the whole 60-second budget. Atlas is the reason this exists: a driver connection to a
+  // paused cluster sits for its full 8-second timeout, and enough of them in a row would
+  // exhaust the cron on their own.
+  const groups = new Map<string, Project[]>();
+  for (const p of candidates) {
+    const list = groups.get(p.provider) ?? [];
+    list.push(p);
+    groups.set(p.provider, list);
+  }
+
+  const results: PingResult[] = [];
+  const skipped: PingResult[] = [];
+  const budgetPerProvider = Math.max(8_000, Math.floor(45_000 / Math.max(1, groups.size)));
+
+  for (const [providerId, projects] of groups) {
+    const adapter = getProvider(providerId as Project["provider"]);
+    // Atlas opens real sockets, so keep it narrow; HTTP providers tolerate more.
+    const limit = adapter.policy.strategy === "ping" && providerId === "mongodb" ? 2 : 6;
+
+    const { results: done, skipped: notRun } = await mapWithDeadline(
+      projects,
+      limit,
+      budgetPerProvider,
+      sweepOne,
+    );
+
+    for (const r of done) if (r) results.push(r);
+
+    // Reported, not silently dropped: a project the sweep ran out of time for still gets
+    // picked up on the next run, and the log says so.
+    for (const p of notRun) {
+      skipped.push({
+        projectId: p.id,
+        provider: p.provider,
+        name: p.name,
+        status: "error",
+        strategy: getProvider(p.provider).policy.strategy,
+        httpStatus: null,
+        durationMs: 0,
+        error: `Skipped: the ${providerId} budget for this run was used up. It will be retried on the next sweep.`,
+        via: "skipped",
+      });
+    }
+  }
+
+  results.push(...skipped);
 
   // Housekeeping: keep 90 days of logs.
   await supabaseService()

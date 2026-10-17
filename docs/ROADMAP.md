@@ -202,7 +202,7 @@ using the same tokens at low opacity.
 
 ---
 
-## ☐ Phase 5 — MongoDB Atlas
+## ☑ Phase 5 — MongoDB Atlas
 
 The hardest adapter: OAuth, a real driver, and a genuine security trade-off to present well.
 
@@ -219,6 +219,46 @@ paused cluster is detected correctly. Then remove the SRV string and confirm it 
 alerting instead of erroring.
 **Must not break:** the 60-second cron budget — a hanging driver connection is the obvious way to
 blow it, hence the timeouts.
+
+**Built and verified 2026-10-17, except with a real Atlas account.** 29 adapter unit tests, plus
+live checks of the OAuth and driver paths: an invalid service account produces an actionable
+message (including that Atlas secrets expire, which is the failure people hit months later), a
+missing connection string degrades to `alert_only`, and the driver fails inside its 8-second
+timeout rather than hanging.
+
+Three decisions the research forced:
+
+- **Service accounts, not programmatic API keys.** The legacy keys need HTTP **Digest** auth,
+  which `fetch` does not implement — supporting them would mean hand-rolling an MD5
+  challenge/response inside a credential path. OAuth client-credentials is one POST, and tokens
+  are cached per client id for their hour.
+- **`paused`, never `stateName`.** A paused cluster can still report `stateName: "IDLE"`, so
+  branching on the state name would miss the one condition this provider exists to catch.
+- **The API is versioned per resource.** Pinned at `2025-03-12` (what the current docs use) with
+  a fallback walk through older dates on a 406, because an endpoint we touch may not have been
+  revised as recently. Probing unauthenticated was useless — Atlas returns 401 before it checks
+  the version.
+
+**Two bugs caught in testing:**
+
+1. **A DNS failure was being reported as a pause.** Inferring `paused` from any socket error
+   would put a red paused banner on a project whose only problem is a typo in the host or a
+   firewall rule. Now the Admin API's `paused` field is the only thing that may set that, and
+   the adapter makes one extra call on the failure path to get a real answer instead of a
+   plausible one. Covered by a test.
+2. **The sweep would have blown the cron budget.** It ran sequentially, which was fine while
+   every provider answered over HTTP in under a second — but a driver connection to a paused
+   cluster sits for its full 8 seconds, and seven in a row exceed 60. The sweep now groups by
+   provider with **bounded concurrency and a per-provider deadline** (Atlas capped at 2 in
+   flight, HTTP providers at 6), and anything it runs out of time for is logged as skipped and
+   retried next run rather than silently dropped.
+
+The `0.0.0.0/0` trade-off gets its own panel on the project page rather than a help string: what
+it actually means, the dedicated read-only `keepstack-ping` user that limits the damage, the
+fixed-IP alternative, and the explicit option to decline and keep alerts-only. M0's hard limits
+(0.5 GB, 500 connections, 100 ops/sec, 10 GB per 7 days) are listed as facts, not meters —
+Atlas publishes no per-cluster usage for free tiers, and invented numbers would be worse than
+none.
 
 ---
 

@@ -7,6 +7,18 @@ import { toProjectRef } from "@/lib/ping";
 import type { Project } from "@/lib/registry";
 import type { UsageSnapshot } from "@/lib/providers/types";
 
+/**
+ * The UTC calendar day of an instant.
+ *
+ * Must agree with the `captured_on` column default in migration 0007,
+ * `(now() AT TIME ZONE 'UTC')::date`, because that column is the upsert's conflict target —
+ * and the uniqueness guarantee is only "one reading per day" if both sides agree on which
+ * day it is. `toISOString()` is always UTC, so this is independent of the server's timezone.
+ */
+export function utcDay(iso: string): string {
+  return new Date(iso).toISOString().slice(0, 10);
+}
+
 export type UsageRow = {
   id: number;
   project_id: string;
@@ -17,6 +29,8 @@ export type UsageRow = {
   period_start: string | null;
   period_end: string | null;
   captured_at: string;
+  /** The UTC day, written alongside `captured_at`; the upsert's conflict target. */
+  captured_on?: string;
 };
 
 export type WatchResult = {
@@ -61,9 +75,14 @@ export async function captureUsage(p: Project): Promise<WatchResult> {
 
   const db = supabaseService();
   const capturedAt = new Date().toISOString();
+  // Derived from the same instant, so the two columns can never disagree.
+  const capturedOn = utcDay(capturedAt);
 
   for (const s of snapshots) {
-    await db.from("usage_snapshots").upsert(
+    // One row per metric per day: the nightly sweep and a manual refresh both replace
+    // today's reading rather than stacking rows. `captured_on` is sent explicitly because
+    // it is what the unique index — and therefore the conflict target — is on.
+    const { error } = await db.from("usage_snapshots").upsert(
       {
         project_id: p.id,
         metric: s.metric,
@@ -73,9 +92,14 @@ export async function captureUsage(p: Project): Promise<WatchResult> {
         period_start: s.periodStart,
         period_end: s.periodEnd,
         captured_at: capturedAt,
+        captured_on: capturedOn,
       },
-      { onConflict: "project_id,metric,captured_at", ignoreDuplicates: false },
+      { onConflict: "project_id,metric,captured_on", ignoreDuplicates: false },
     );
+    if (error) {
+      // Don't let one metric's write failure look like a successful capture.
+      return { ...base, status: "error", metrics: 0, error: error.message };
+    }
   }
 
   await db
