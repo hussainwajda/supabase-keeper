@@ -14,6 +14,7 @@ it's confusing, so here is the whole sequence in one place.
 | 2 | `0002_multi_provider.sql` | SQL editor | Multi-provider columns |
 | 3 | `0003_auth_and_rls.sql` | SQL editor | Profiles, ownership, **RLS on** |
 | 4 | `0005_vault.sql` | SQL editor | Vault tables |
+| 4b | `0007_usage_snapshots.sql` | SQL editor | Usage tracking for `watch` providers (Neon) |
 | 5 | **Environment** | `.env.local` / Vercel | `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `KEEPSTACK_MASTER_KEY`, `KEEPSTACK_PIN_PEPPER` |
 | 6 | **Sign in** | the app | Google, or email + password |
 | 7 | **Claim your rows** | dashboard banner | Needs `KEEPSTACK_ALLOW_LEGACY_CLAIM=true` |

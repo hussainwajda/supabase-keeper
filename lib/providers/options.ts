@@ -36,7 +36,7 @@ const IDENTIFIER: Record<ProviderId, { label: string; hint: string; placeholder:
   },
   neon: {
     label: "Project ID",
-    hint: "From the Neon console URL, or paste a connection string.",
+    hint: "From the console URL (console.neon.tech/app/projects/…), or paste a connection string — the endpoint host contains it.",
     placeholder: "fragrant-dew-12345678",
   },
   mongodb: {

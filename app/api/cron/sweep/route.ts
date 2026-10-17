@@ -39,14 +39,23 @@ export async function GET(req: NextRequest) {
   if (failed.length) console.error("keepstack sweep failures", failed);
 
   // Per-provider rollup, so a single provider's outage is visible at a glance in the logs.
-  const byProvider: Record<string, { ok: number; failed: number }> = {};
+  const byProvider: Record<string, { ok: number; failed: number; strategy: string }> = {};
   for (const r of results) {
-    byProvider[r.provider] ??= { ok: 0, failed: 0 };
+    byProvider[r.provider] ??= { ok: 0, failed: 0, strategy: r.strategy };
     byProvider[r.provider][r.status === "ok" ? "ok" : "failed"]++;
   }
 
+  // Counted separately because they are different claims: a ping reset an inactivity clock,
+  // a usage read did not and never pretends to have.
+  const pinged = results.filter((r) => r.strategy === "ping").length;
+  const watched = results.filter((r) => r.strategy === "watch").length;
+  const checked = results.filter((r) => r.strategy === "alert_only").length;
+
   return NextResponse.json({
-    pinged: results.length,
+    processed: results.length,
+    pinged,
+    watched,
+    checked,
     ok: results.length - failed.length,
     failed: failed.length,
     byProvider,

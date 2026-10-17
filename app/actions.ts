@@ -100,6 +100,11 @@ export async function saveProject(_: string | null, fd: FormData): Promise<strin
   const provider = asProvider(str(fd, "provider"));
   const adapter = getProvider(provider);
 
+  // Needed for the metadata merge below.
+  const existing = id
+    ? (await db.from("projects").select("metadata").eq("id", id).maybeSingle()).data
+    : null;
+
   const rawId = str(fd, "external_id") ?? "";
   const parsed = adapter.parse(rawId);
   if (!parsed) {
@@ -117,12 +122,20 @@ export async function saveProject(_: string | null, fd: FormData): Promise<strin
     }
   }
 
+  // `ping_table` lives in metadata now (its column was dropped by 0006). Merge rather than
+  // replace, so provider-specific keys discovery wrote there survive an edit from this form.
+  const metadata: Record<string, unknown> = { ...(existing?.metadata ?? {}) };
+  if (fd.has("ping_table")) {
+    const table = str(fd, "ping_table");
+    if (table) metadata.ping_table = table;
+    else delete metadata.ping_table;
+  }
+
   const row: Partial<Project> & Record<string, unknown> = {
     user_id: userId,
     provider,
     external_id: externalId,
-    // Keep the legacy column in sync until migration 0006 drops it.
-    ref: provider === "supabase" ? externalId : null,
+    metadata,
     name: str(fd, "name") ?? externalId,
     account_id: str(fd, "account_id"),
     strategy: adapter.policy.strategy,
@@ -132,13 +145,12 @@ export async function saveProject(_: string | null, fd: FormData): Promise<strin
     notes: str(fd, "notes"),
   };
 
-  // Keep-alive fields are hidden when the toggle is off, and a blank key means "keep the saved one".
-  // With the vault available, a key entered here goes into encrypted storage rather than back
-  // into the plaintext column that migration 0006 exists to delete.
+  // A blank key means "keep the saved one". Keys always go to the vault now; `forWrite`
+  // strips `anon_key` for registries that have run 0006, and the pre-0006 fallback below
+  // keeps older registries working.
   const anonKey = str(fd, "anon_key");
   const anonKeyToVault = anonKey && vaultConfigured();
   if (anonKey && !anonKeyToVault) row.anon_key = anonKey;
-  if (fd.has("ping_table")) row.ping_table = str(fd, "ping_table");
   if (fd.has("interval_days")) {
     row.interval_days = Math.min(
       60,

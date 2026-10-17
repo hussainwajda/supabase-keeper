@@ -181,6 +181,22 @@ export async function exportRegistry() {
   };
 }
 
+/**
+ * Columns migration 0006 dropped. Detected once per process, because a write that names a
+ * missing column fails outright — and the direction of drift is the opposite of 0002's:
+ * there the code was ahead of the schema, here the schema is ahead of any lingering code.
+ */
+const DROPPED_BY_0006 = ["ref", "ping_table", "anon_key"] as const;
+
+let legacyColumnsPresent: boolean | null = null;
+
+async function hasLegacyColumns(): Promise<boolean> {
+  if (legacyColumnsPresent !== null) return legacyColumnsPresent;
+  const { error } = await supabaseService().from("projects").select("ref").limit(1);
+  legacyColumnsPresent = !(error && error.code === "42703");
+  return legacyColumnsPresent;
+}
+
 /** Columns that only exist after migration 0002. */
 const POST_0002_COLUMNS = {
   projects: [
@@ -209,8 +225,15 @@ export async function forWrite<T extends Record<string, unknown>>(
   table: keyof typeof POST_0002_COLUMNS,
   row: T,
 ): Promise<Partial<T>> {
+  const drop = new Set<string>();
+
   const { migration0002 } = await schemaStatus();
-  if (migration0002) return row;
-  const drop = new Set<string>(POST_0002_COLUMNS[table]);
+  if (!migration0002) for (const c of POST_0002_COLUMNS[table]) drop.add(c);
+
+  if (table === "projects" && !(await hasLegacyColumns())) {
+    for (const c of DROPPED_BY_0006) drop.add(c);
+  }
+
+  if (drop.size === 0) return row;
   return Object.fromEntries(Object.entries(row).filter(([k]) => !drop.has(k))) as Partial<T>;
 }

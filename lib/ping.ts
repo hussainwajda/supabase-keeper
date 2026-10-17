@@ -1,7 +1,7 @@
 import "server-only";
 import { supabaseService } from "@/lib/supabase/service";
 import { forWrite, keepAliveProjects, type Project } from "@/lib/registry";
-import { readServerSecret } from "@/lib/vault/secrets";
+import { resolveServerCredentials } from "@/lib/vault/resolve";
 import { vaultConfigured } from "@/lib/crypto/env";
 import { getProvider } from "@/lib/providers/registry";
 import type { PingOutcome, ProjectRef, Strategy } from "@/lib/providers/types";
@@ -35,8 +35,8 @@ export function toProjectRef(p: Project): ProjectRef {
     name: p.name,
     metadata: {
       ...p.metadata,
-      // Legacy column still wins until migration 0006 drops it.
-      ping_table: p.ping_table ?? (p.metadata.ping_table as string | undefined) ?? null,
+      // Canonically in metadata; the dropped column is read only for registries pre-0006.
+      ping_table: (p.metadata.ping_table as string | undefined) ?? p.ping_table ?? null,
     },
   };
 }
@@ -44,20 +44,22 @@ export function toProjectRef(p: Project): ProjectRef {
 /**
  * Credentials for one project, decrypted from the vault.
  *
- * Reads the encrypted `server`-tier secret first and falls back to the legacy plaintext
- * `projects.anon_key` column, so the sweep keeps working during the window between running
- * migration 0005 and pressing "Encrypt saved keys". Migration 0006 drops that column once
- * nothing is left in it.
+ * Merges the account's credentials (a Supabase PAT) with the project's own (an anon key), so
+ * an adapter can pick its best transport. Falls back to the legacy plaintext column for
+ * registries that haven't run migration 0006 yet.
  */
 async function credentialsFor(p: Project): Promise<Record<string, string | undefined>> {
-  let anonKey = p.anon_key ?? undefined;
+  const resolved =
+    vaultConfigured() && p.user_id
+      ? await resolveServerCredentials(p.user_id, {
+          accountId: p.account_id,
+          projectId: p.id,
+        })
+      : {};
 
-  if (vaultConfigured() && p.user_id) {
-    const stored = await readServerSecret(p.user_id, { projectId: p.id }, "anon_key");
-    if (stored) anonKey = stored;
-  }
-
-  return { anon_key: anonKey };
+  // Pre-0006 registries still have the plaintext column; the vault wins where both exist.
+  if (!resolved.anon_key && p.anon_key) resolved.anon_key = p.anon_key;
+  return resolved;
 }
 
 export async function pingProject(p: Project): Promise<PingResult> {
@@ -116,10 +118,15 @@ export async function pingProject(p: Project): Promise<PingResult> {
 }
 
 /**
- * Ping every keep-alive project (only due ones unless `force`). Used by the cron and "Ping all".
+ * Sweep every enabled project, routing by the provider's strategy:
+ *
+ *   ping        -> `pingProject` when due by `interval_days`
+ *   watch       -> `captureUsage` daily; never a ping, because that would spend the quota
+ *                  the watching is meant to protect
+ *   alert_only  -> a status read, recorded as a check and never as a keep-alive
  *
  * Phase 8 adds bounded concurrency and per-provider deadlines so one provider's outage can't
- * eat the whole 60-second budget. With a single provider the current shape is fine.
+ * eat the whole 60-second budget.
  */
 export async function pingProjects({
   force = false,
@@ -129,11 +136,37 @@ export async function pingProjects({
   // `userId` is set when a signed-in user presses "Ping all now", so one user can never
   // trigger pings across someone else's projects. The cron omits it and covers everybody.
   const all = await keepAliveProjects(userId);
-  const targets = all
-    .filter((p) => !provider || p.provider === provider)
-    .filter((p) => force || isDue(p));
+  const candidates = all.filter((p) => !provider || p.provider === provider);
 
-  const results = await Promise.all(targets.map(pingProject));
+  const { captureUsage } = await import("@/lib/usage");
+  const results: PingResult[] = [];
+
+  for (const p of candidates) {
+    const adapter = getProvider(p.provider);
+
+    if (adapter.policy.strategy === "watch") {
+      // Usage is cheap and the signal is a trend, so read it daily rather than on an
+      // interval. `force` changes nothing here — there is no clock to reset.
+      if (!force && !isDue({ ...p, interval_days: 1 })) continue;
+
+      const watched = await captureUsage(p);
+      results.push({
+        projectId: watched.projectId,
+        provider: watched.provider,
+        name: watched.name,
+        status: watched.status,
+        strategy: "watch",
+        httpStatus: null,
+        durationMs: 0,
+        error: watched.error,
+        via: watched.status === "ok" ? `usage read (${watched.metrics} metrics)` : "usage read",
+      });
+      continue;
+    }
+
+    if (!force && !isDue(p)) continue;
+    results.push(await pingProject(p));
+  }
 
   // Housekeeping: keep 90 days of logs.
   await supabaseService()

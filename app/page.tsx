@@ -94,7 +94,14 @@ export default async function Dashboard() {
   });
 
   const used = slotsUsed(projects);
-  const keepAlive = projects.filter((p) => p.keep_alive).length;
+  // Counted apart because they are different claims: one resets an inactivity clock, the
+  // other only watches a quota.
+  const keepAlive = projects.filter(
+    (p) => p.keep_alive && policies[p.provider as ProviderId]?.strategy === "ping",
+  ).length;
+  const watched = projects.filter(
+    (p) => p.keep_alive && policies[p.provider as ProviderId]?.strategy !== "ping",
+  ).length;
   const failing = projects.filter((p) => p.keep_alive && p.last_status === "error").length;
   const paused = projects.filter((p) => p.lifecycle === "paused" || p.lifecycle === "archived").length;
 
@@ -144,6 +151,7 @@ export default async function Dashboard() {
         <Stat value={accounts.length} label="Accounts" />
         <Stat value={projects.length} label="Projects" />
         <Stat value={keepAlive} label="Kept alive" />
+        {watched > 0 && <Stat value={watched} label="Watched" />}
         <Stat value={paused} label="Paused" tone={paused ? "err" : undefined} />
         <Stat value={failing} label="Failing pings" tone={failing ? "err" : undefined} />
         <Stat

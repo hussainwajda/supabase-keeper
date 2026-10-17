@@ -239,18 +239,30 @@ export function ProjectBoard({
                   </TableCell>
 
                   <TableCell>
-                    {p.keep_alive ? (
+                    {!p.keep_alive ? (
+                      <span className="text-muted-foreground text-[0.8125rem]">off</span>
+                    ) : policy?.strategy === "watch" ? (
+                      // No interval: this provider doesn't pause, and pinging it would spend
+                      // the quota the watching protects.
+                      <>
+                        <div className="text-[0.8125rem]">quota watch</div>
+                        <div className="text-muted-foreground text-xs">daily usage read</div>
+                      </>
+                    ) : policy?.strategy === "alert_only" ? (
+                      <>
+                        <div className="text-[0.8125rem]">alerts only</div>
+                        <div className="text-muted-foreground text-xs">status check, no ping</div>
+                      </>
+                    ) : (
                       <>
                         <div className="text-[0.8125rem]">every {p.interval_days}d</div>
                         <div className="text-muted-foreground text-xs" suppressHydrationWarning>
                           next: {nextPingLabel(p.last_pinged_at, p.interval_days, true)}
                         </div>
                         {!p.has_key && (
-                          <div className="text-destructive text-xs">missing anon key</div>
+                          <div className="text-destructive text-xs">missing credentials</div>
                         )}
                       </>
-                    ) : (
-                      <span className="text-muted-foreground text-[0.8125rem]">off</span>
                     )}
                   </TableCell>
 
@@ -263,7 +275,7 @@ export function ProjectBoard({
                         {(p.last_error ?? "error").slice(0, 60)}
                       </div>
                     )}
-                    {p.keep_alive && urgent && risk !== null && (
+                    {p.keep_alive && policy?.strategy !== "watch" && urgent && risk !== null && (
                       <div className="text-warning text-xs" suppressHydrationWarning>
                         {policy?.pauseNoun ?? "pause"} risk in {Math.max(0, risk).toFixed(1)}d
                       </div>
@@ -272,12 +284,14 @@ export function ProjectBoard({
 
                   <TableCell>
                     <div className="flex items-center justify-end gap-1">
-                      <form action={pingNow}>
-                        <input type="hidden" name="id" value={p.id} />
-                        <SubmitButton variant="outline" size="sm" pending="…">
-                          Ping
-                        </SubmitButton>
-                      </form>
+                      {policy?.strategy === "ping" && (
+                        <form action={pingNow}>
+                          <input type="hidden" name="id" value={p.id} />
+                          <SubmitButton variant="outline" size="sm" pending="…">
+                            Ping
+                          </SubmitButton>
+                        </form>
+                      )}
                       <Button asChild variant="ghost" size="icon-sm">
                         <a
                           href={p.console_url}

@@ -147,13 +147,9 @@ export function ProjectForm({
         <div className="flex items-start justify-between gap-3">
           <div className="grid gap-1">
             <Label htmlFor="keep_alive">
-              {canPing ? "Keep this project alive" : "Monitor this project"}
+              {canPing ? "Keep this project alive" : "Watch this project's quota"}
             </Label>
-            <p className="text-muted-foreground text-xs">
-              {canPing
-                ? provider.policy.summary
-                : `${provider.name} doesn't pause for inactivity — Keepstack tracks usage and status instead of pinging.`}
-            </p>
+            <p className="text-muted-foreground text-xs">{provider.policy.summary}</p>
           </div>
           <Switch
             id="keep_alive"
@@ -204,7 +200,9 @@ export function ProjectForm({
                     id="ping_table"
                     name="ping_table"
                     defaultValue={
-                      project?.ping_table ?? (project ? "" : "keep_alive")
+                      (project?.metadata?.ping_table as string | undefined) ??
+                      project?.ping_table ??
+                      (project ? "" : "keep_alive")
                     }
                     className="font-mono"
                   />

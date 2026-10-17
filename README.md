@@ -15,10 +15,10 @@ remember signing up for. Keepstack answers the three questions that actually hur
   after a PIN or an emailed code — the way GitHub makes you re-authenticate before something
   destructive.
 
-> **Status: Phase 2 of 9.** Keepstack is the multi-provider successor to `supabase-keeper`.
-> Supabase works end to end today, with real accounts, row level security and an encrypted
-> credential vault. Neon, MongoDB Atlas, Upstash and Appwrite land in Phases 4-7.
-> See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status: Phase 4 of 9.** Keepstack is the multi-provider successor to `supabase-keeper`.
+> **Supabase** and **Neon** are both implemented — including Supabase project auto-discovery,
+> SQL keep-alive pings and one-click restore, and Neon quota watching. MongoDB Atlas, Upstash
+> and Appwrite land in Phases 5-7. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ---
 
@@ -26,11 +26,11 @@ remember signing up for. Keepstack answers the three questions that actually hur
 
 | Provider | How it dies on the free tier | What Keepstack does |
 | --- | --- | --- |
-| **Supabase** | Paused after **7 days** idle | Pings a real Postgres query; auto-discovers projects, fetches anon keys, and can restore a paused project |
-| **Neon** | Never paused — but **100 CU-hours/month** and exhausting it suspends your compute | Watches quota burn and warns on headroom. Deliberately never pings: that would spend the budget it's protecting |
-| **MongoDB Atlas** | M0 paused after **30 days** with zero connections | Real driver connection (the Data API was removed in Sept 2025). Detects the paused state even when it can't prevent it |
-| **Upstash** | Archived after **~14 days** idle | One-command Redis REST ping; tracks the 500K/month command budget |
-| **Appwrite** | Paused after **7 days** without Console activity, then **deleted after 90 days** | Detects and counts down. Honest about the limit: the pause is driven by Console use, so no API ping prevents it |
+| **Supabase** ✅ | Paused after **7 days** idle | Pings via `select 1` on the Management API — no `keep_alive` table needed. Auto-discovers projects, fetches anon keys, reports per-service health, and restores a paused project in one click |
+| **Neon** ✅ | Never paused — but **100 CU-hours/month**, and exhausting it suspends your compute | Watches quota burn with meters and days-of-headroom warnings. Deliberately never pings: that would spend the budget it's protecting |
+| **MongoDB Atlas** (Phase 5) | M0 paused after **30 days** with zero connections | Real driver connection (the Data API was removed in Sept 2025). Detects the paused state even when it can't prevent it |
+| **Upstash** (Phase 6) | Archived after **~14 days** idle | One-command Redis REST ping; tracks the 500K/month command budget |
+| **Appwrite** (Phase 7) | Paused after **7 days** without Console activity, then **deleted after 90 days** | Detects and counts down. Honest about the limit: the pause is driven by Console use, so no API ping prevents it |
 
 The full research behind each adapter — endpoints, auth, policies, sources — is in
 [docs/PROVIDERS.md](docs/PROVIDERS.md).

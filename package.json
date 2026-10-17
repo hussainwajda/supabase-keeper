@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "next lint",
     "test:crypto": "KEEPSTACK_MASTER_KEY=dGVzdC1tYXN0ZXIta2V5LWZvci11bml0LXRlc3RzLW9ubHk= KEEPSTACK_PIN_PEPPER=dGVzdC1waW4tcGVwcGVyLWZvci11bml0LXRlc3RzLW9ubHk= tsx --conditions=react-server --test lib/crypto/__tests__/*.test.ts",
-    "test": "pnpm test:crypto"
+    "test": "pnpm test:crypto && pnpm test:providers",
+    "test:providers": "KEEPSTACK_MASTER_KEY=dGVzdC1tYXN0ZXIta2V5LWZvci11bml0LXRlc3RzLW9ubHk= KEEPSTACK_PIN_PEPPER=dGVzdC1waW4tcGVwcGVyLWZvci11bml0LXRlc3RzLW9ubHk= tsx --conditions=react-server --test lib/providers/__tests__/*.test.ts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "1.1.15",

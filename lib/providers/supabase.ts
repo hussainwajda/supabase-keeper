@@ -1,8 +1,10 @@
 import type {
+  AccountOverview,
   ConnectionStrings,
   CredentialField,
   Credentials,
   Discovered,
+  HealthReport,
   Lifecycle,
   ParsedIdentifier,
   PingOutcome,
@@ -122,6 +124,48 @@ const projectFields: CredentialField[] = [
   },
 ];
 
+const API = "https://api.supabase.com/v1";
+
+/**
+ * One place for every Management API call: bearer auth, a timeout, and errors that quote the
+ * provider instead of swallowing it. 429 is called out because the limit (120/min per user,
+ * per endpoint) is easy to hit while syncing several accounts at once.
+ */
+async function api(
+  pat: string,
+  path: string,
+  init: RequestInit = {},
+): Promise<{ ok: true; data: unknown } | { ok: false; status: number; error: string }> {
+  try {
+    const res = await fetch(`${API}${path}`, {
+      ...init,
+      headers: {
+        Authorization: `Bearer ${pat}`,
+        ...(init.body ? { "Content-Type": "application/json" } : {}),
+        ...init.headers,
+      },
+      cache: "no-store",
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    if (!res.ok) {
+      const body = (await res.text()).slice(0, 300);
+      const error =
+        res.status === 401
+          ? "The personal access token was rejected. It may be revoked, expired, or scoped to a different organization."
+          : res.status === 429
+            ? "Supabase rate limit reached (120 requests/minute). Try again shortly."
+            : `Supabase API ${res.status}: ${body || res.statusText}`;
+      return { ok: false, status: res.status, error };
+    }
+
+    const text = await res.text();
+    return { ok: true, data: text ? JSON.parse(text) : null };
+  } catch (e) {
+    return { ok: false, status: 0, error: (e as Error).message };
+  }
+}
+
 export const supabaseAdapter: ProviderAdapter = {
   id: "supabase",
   name: "Supabase",
@@ -168,28 +212,80 @@ export const supabaseAdapter: ProviderAdapter = {
   consoleUrl: (project) => dashboardUrl(project.externalId),
 
   /**
-   * Hit the project's REST API with its anon key. With a ping table this runs a real
-   * `select … limit 1` against Postgres, which is what counts as activity.
+   * Keep the project alive, best transport first.
    *
-   * Phase 3 adds the Management API path (`POST /v1/projects/{ref}/database/query`), which
-   * needs no anon key and no keep_alive table. This is the fallback that keeps working for
-   * users who haven't added a personal access token.
+   *   1. **Management API SQL** (`POST /v1/projects/{ref}/database/query`) — a real
+   *      `select 1` against Postgres. No anon key, no `keep_alive` table, and it works even
+   *      when PostgREST is unhealthy. Marked experimental/beta in Supabase's own spec, which
+   *      is exactly why it's a preferred path with fallbacks rather than the only path.
+   *   2. **REST on a table** with the anon key — the original behaviour.
+   *   3. **Auth health check** — weakest; proves the gateway is up, not that Postgres ran
+   *      anything, so it is a last resort and is labelled as such in the log.
    */
   async ping(project: ProjectRef, credentials: Credentials): Promise<PingOutcome> {
-    const anonKey = credentials.anon_key;
-    const pingTable = (project.metadata.ping_table as string | undefined) ?? null;
-    const base = `https://${project.externalId}.supabase.co`;
     const started = Date.now();
+    const ref = project.externalId;
 
+    if (credentials.pat) {
+      const res = await api(credentials.pat, `/projects/${encodeURIComponent(ref)}/database/query`, {
+        method: "POST",
+        body: JSON.stringify({ query: "select 1 as keepstack_ping;", read_only: true }),
+      });
+      const durationMs = Date.now() - started;
+
+      if (res.ok) {
+        return {
+          status: "ok",
+          strategy: "ping",
+          httpStatus: 201,
+          durationMs,
+          error: null,
+          lifecycle: "active",
+          via: "management API SQL (select 1)",
+        };
+      }
+
+      // A paused project can't run SQL. Report that clearly rather than as a generic failure.
+      if (/paused|not found|inactive/i.test(res.error) || res.status === 404) {
+        return {
+          status: "error",
+          strategy: "ping",
+          httpStatus: res.status || null,
+          durationMs,
+          error: `Project appears to be PAUSED or unreachable — use Restore. ${res.error}`,
+          lifecycle: "paused",
+          via: "management API SQL",
+        };
+      }
+
+      // Anything else (a 401 on a narrowly scoped token, a 5xx, the beta endpoint changing):
+      // fall through to the anon-key path rather than reporting a false failure.
+      if (!credentials.anon_key) {
+        return {
+          status: "error",
+          strategy: "ping",
+          httpStatus: res.status || null,
+          durationMs,
+          error: res.error,
+          via: "management API SQL",
+        };
+      }
+    }
+
+    const anonKey = credentials.anon_key;
     if (!anonKey) {
       return {
         status: "error",
         strategy: "ping",
         httpStatus: null,
-        durationMs: 0,
-        error: "No anon/publishable key saved for this project",
+        durationMs: Date.now() - started,
+        error:
+          "No credentials for this project. Add a personal access token to its account, or save an anon/publishable key.",
       };
     }
+
+    const base = `https://${ref}.supabase.co`;
+    const pingTable = (project.metadata.ping_table as string | undefined) ?? null;
 
     const headers: Record<string, string> = { apikey: anonKey };
     // Legacy anon keys are JWTs and go in Authorization too; new sb_publishable_ keys must not.
@@ -198,7 +294,7 @@ export const supabaseAdapter: ProviderAdapter = {
     const url = pingTable
       ? `${base}/rest/v1/${encodeURIComponent(pingTable)}?select=*&limit=1`
       : `${base}/auth/v1/health`;
-    const via = pingTable ? `REST select on "${pingTable}"` : "auth health check";
+    const via = pingTable ? `REST select on "${pingTable}"` : "auth health check (weak)";
 
     try {
       const res = await fetch(url, {
@@ -222,10 +318,10 @@ export const supabaseAdapter: ProviderAdapter = {
       let body = (await res.text()).slice(0, 300);
       let lifecycle: Lifecycle = "unknown";
       if (res.status === 404 && pingTable) {
-        body = `Table "${pingTable}" not found — run the keep-alive SQL in this project. ${body}`;
+        body = `Table "${pingTable}" not found — run the keep-alive SQL in this project, or add a personal access token to its account to ping without one. ${body}`;
       }
       if (res.status === 540 || /paused/i.test(body)) {
-        body = `Project appears to be PAUSED — restore it from the dashboard. ${body}`;
+        body = `Project appears to be PAUSED — restore it. ${body}`;
         lifecycle = "paused";
       }
       return {
@@ -249,25 +345,15 @@ export const supabaseAdapter: ProviderAdapter = {
     }
   },
 
-  /**
-   * Auto-discovery via the Management API. Wired into the UI in Phase 3; implemented here
-   * because it is pure provider knowledge and belongs with the rest of it.
-   */
+  /** Auto-discovery: every project the token can see, with its real status. */
   async discover(credentials: Credentials): Promise<Discovered[]> {
     const pat = credentials.pat;
     if (!pat) throw new Error("A Supabase personal access token is required to list projects.");
 
-    const res = await fetch("https://api.supabase.com/v1/projects", {
-      headers: { Authorization: `Bearer ${pat}` },
-      cache: "no-store",
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!res.ok) {
-      const body = (await res.text()).slice(0, 300);
-      throw new Error(`Supabase API ${res.status}: ${body || res.statusText}`);
-    }
+    const res = await api(pat, "/projects");
+    if (!res.ok) throw new Error(res.error);
 
-    const projects = (await res.json()) as {
+    const projects = (res.data ?? []) as {
       ref: string;
       name: string;
       region: string;
@@ -293,25 +379,118 @@ export const supabaseAdapter: ProviderAdapter = {
     }));
   },
 
+  /** One project's current status, without listing everything. */
+  async status(project: ProjectRef, credentials: Credentials) {
+    const pat = credentials.pat;
+    if (!pat) throw new Error("A Supabase personal access token is required to read status.");
+
+    const res = await api(pat, `/projects/${encodeURIComponent(project.externalId)}`);
+    if (!res.ok) {
+      // A ref the token can't see reads as removed rather than as an error, because that is
+      // what it means operationally: it is gone, or it belongs to another organization.
+      if (res.status === 404) return { lifecycle: "deleted" as Lifecycle, raw: "NOT_FOUND" };
+      throw new Error(res.error);
+    }
+
+    const raw = ((res.data as { status?: string })?.status ?? "UNKNOWN") as string;
+    return { lifecycle: lifecycleFromStatus(raw), raw };
+  },
+
+  /** Per-service health, so "the project is up" can be more specific than a single ping. */
+  async health(project: ProjectRef, credentials: Credentials): Promise<HealthReport[]> {
+    const pat = credentials.pat;
+    if (!pat) return [];
+
+    const services = "db,auth,rest,realtime,storage";
+    const res = await api(
+      pat,
+      `/projects/${encodeURIComponent(project.externalId)}/health?services=${services}`,
+    );
+    if (!res.ok) return [];
+
+    return ((res.data ?? []) as { name?: string; healthy?: boolean; status?: string; error?: string }[]).map(
+      (h) => ({
+        service: h.name ?? "unknown",
+        status: h.healthy === true ? "healthy" : h.healthy === false ? "unhealthy" : "unknown",
+        detail: h.error ?? h.status ?? null,
+      }),
+    );
+  },
+
+  /**
+   * Fetch the project's anon/publishable key so the user never has to paste one.
+   *
+   * Prefers a publishable key, then a legacy anon JWT. Secret and service_role keys are
+   * filtered out explicitly — this runs unattended and stores what it finds as a `server`
+   * secret, so picking the wrong one would quietly put a God-mode key in the registry.
+   */
+  async fetchProjectCredentials(
+    project: ProjectRef,
+    credentials: Credentials,
+  ): Promise<Record<string, string>> {
+    const pat = credentials.pat;
+    if (!pat) return {};
+
+    const res = await api(pat, `/projects/${encodeURIComponent(project.externalId)}/api-keys`);
+    if (!res.ok) return {};
+
+    const keys = (res.data ?? []) as { name?: string; api_key?: string; type?: string }[];
+    const safe = keys.filter((k) => {
+      const value = k.api_key ?? "";
+      if (!value) return false;
+      if (value.startsWith("sb_secret_")) return false;
+      if (k.name === "service_role") return false;
+      return !looksLikeServiceRole(value);
+    });
+
+    const publishable = safe.find((k) => k.api_key!.startsWith("sb_publishable_"));
+    const anon = safe.find((k) => k.name === "anon") ?? safe.find((k) => k.api_key!.startsWith("eyJ"));
+    const chosen = publishable ?? anon;
+
+    return chosen?.api_key ? { anon_key: chosen.api_key } : {};
+  },
+
+  /**
+   * Organisations and their project counts, so the free-slot counter reflects reality rather
+   * than assuming two per account.
+   */
+  async overview(credentials: Credentials): Promise<AccountOverview> {
+    const pat = credentials.pat;
+    if (!pat) throw new Error("A Supabase personal access token is required.");
+
+    const orgsRes = await api(pat, "/organizations");
+    if (!orgsRes.ok) throw new Error(orgsRes.error);
+
+    const orgs = (orgsRes.data ?? []) as { id: string; slug?: string; name: string; plan?: string }[];
+    const projects = await this.discover!(credentials);
+
+    return {
+      organizations: orgs.map((o) => {
+        const slug = o.slug ?? o.id;
+        const plan = o.plan ?? null;
+        return {
+          id: slug,
+          name: o.name,
+          plan,
+          projectCount: projects.filter((p) => p.metadata.organization_slug === slug).length,
+          // Free organisations get two active projects; paid plans have no small fixed cap
+          // worth showing, so report null rather than inventing a number.
+          freeProjectLimit: plan === null || plan === "free" ? 2 : null,
+        };
+      }),
+    };
+  },
+
   /** Un-pause a project. `POST /v1/projects/{ref}/restore`. */
   async revive(project: ProjectRef, credentials: Credentials): Promise<void> {
     const pat = credentials.pat;
     if (!pat) throw new Error("A Supabase personal access token is required to restore a project.");
 
-    const res = await fetch(
-      `https://api.supabase.com/v1/projects/${encodeURIComponent(project.externalId)}/restore`,
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${pat}`, "Content-Type": "application/json" },
-        body: "{}",
-        cache: "no-store",
-        signal: AbortSignal.timeout(30_000),
-      },
-    );
-    if (!res.ok) {
-      const body = (await res.text()).slice(0, 300);
-      throw new Error(`Restore failed (${res.status}): ${body || res.statusText}`);
-    }
+    const res = await api(pat, `/projects/${encodeURIComponent(project.externalId)}/restore`, {
+      method: "POST",
+      body: "{}",
+    });
+    if (!res.ok) throw new Error(`Restore failed. ${res.error}`);
   },
 
   /**

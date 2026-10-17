@@ -8,6 +8,7 @@ import { listSecrets, vaultSchemaReady } from "@/lib/vault/secrets";
 import { otpAvailable } from "@/lib/vault/email";
 import { SecretSlots, type SecretSlot } from "@/components/vault/secret-form";
 import { UnlockDialog } from "@/components/vault/unlock-dialog";
+import { SyncPanel } from "@/components/providers/sync-panel";
 import { deleteAccount, saveAccount } from "@/app/actions";
 import { SubmitButton } from "@/components/buttons";
 import { Card, CardContent } from "@/components/ui/card";
@@ -204,6 +205,35 @@ export default async function AccountsPage() {
                         accountId={a.id}
                         unlocked={unlocked}
                         vaultReady
+                      />
+                    </div>
+                  </details>
+                )}
+
+                {vaultReady && getProvider(a.provider).capabilities.discover && (
+                  <details className="mt-1" open={a.last_sync_status === "error"}>
+                    <summary className="text-muted-foreground cursor-pointer text-xs">
+                      Sync projects
+                    </summary>
+                    <div className="mt-3">
+                      <SyncPanel
+                        accountId={a.id}
+                        provider={a.provider}
+                        providerName={getProvider(a.provider).name}
+                        lastSyncedAt={a.last_synced_at}
+                        lastStatus={a.last_sync_status}
+                        lastError={a.last_sync_error}
+                        hasToken={allSecrets.some(
+                          (x) =>
+                            x.account_id === a.id &&
+                            getProvider(a.provider).accountFields.some(
+                              (f) => f.key === x.kind && f.tier === "server",
+                            ),
+                        )}
+                        tokenFieldLabel={
+                          getProvider(a.provider).accountFields.find((f) => f.tier === "server")
+                            ?.label ?? "API token"
+                        }
                       />
                     </div>
                   </details>

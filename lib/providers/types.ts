@@ -121,6 +121,26 @@ export type Discovered = {
   metadata: Record<string, unknown>;
 };
 
+/** Per-service status, for providers that report more than up/down. */
+export type HealthReport = {
+  service: string;
+  status: "healthy" | "unhealthy" | "unknown";
+  detail?: string | null;
+};
+
+/** What `discover()` can tell us about an account's plan limits, for honest slot counters. */
+export type AccountOverview = {
+  /** Organisations/groups, with how many projects each holds and its plan where known. */
+  organizations: {
+    id: string;
+    name: string;
+    plan: string | null;
+    projectCount: number;
+    /** Free-tier project allowance, when the provider makes it knowable. */
+    freeProjectLimit: number | null;
+  }[];
+};
+
 export type UsageSnapshot = {
   metric: string;
   value: number;
@@ -167,6 +187,22 @@ export interface ProviderAdapter {
   consoleUrl(project: ProjectRef): string;
 
   discover?(credentials: Credentials): Promise<Discovered[]>;
+
+  /**
+   * Fetch credentials the provider will hand us itself, so the user doesn't have to paste
+   * them. Supabase returns anon keys from its Management API; Upstash returns REST tokens.
+   * Keyed by `CredentialField.key`, and the caller stores them as `server`-tier secrets.
+   */
+  fetchProjectCredentials?(
+    project: ProjectRef,
+    credentials: Credentials,
+  ): Promise<Record<string, string>>;
+
+  /** Plan and organisation context, for free-slot counters that aren't guesses. */
+  overview?(credentials: Credentials): Promise<AccountOverview>;
+
+  health?(project: ProjectRef, credentials: Credentials): Promise<HealthReport[]>;
+
   ping?(project: ProjectRef, credentials: Credentials): Promise<PingOutcome>;
   status?(
     project: ProjectRef,

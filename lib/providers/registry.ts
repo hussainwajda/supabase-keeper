@@ -1,3 +1,4 @@
+import { neonAdapter } from "./neon";
 import { supabaseAdapter } from "./supabase";
 import { PROVIDER_IDS, type ProviderAdapter, type ProviderId } from "./types";
 
@@ -5,10 +6,11 @@ import { PROVIDER_IDS, type ProviderAdapter, type ProviderId } from "./types";
  * The only place that knows which adapters exist.
  *
  * Adding a provider is one file here, one line in this map, and one section in
- * docs/PROVIDERS.md. Phases 4-7 fill in neon, mongodb, upstash and appwrite.
+ * docs/PROVIDERS.md. Phases 5-7 fill in mongodb, upstash and appwrite.
  */
 const ADAPTERS: Partial<Record<ProviderId, ProviderAdapter>> = {
   supabase: supabaseAdapter,
+  neon: neonAdapter,
 };
 
 /** Adapters that are implemented and safe to use today. */

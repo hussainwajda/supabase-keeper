@@ -26,7 +26,7 @@ problem Neon does not have.
 
 ---
 
-## 1. Supabase (Postgres) — `supabase`
+## 1. Supabase (Postgres) — `supabase` ✅ implemented
 
 The existing integration, massively upgradeable. Today the app stores a ref and an anon key and
 pings a hand-made `keep_alive` table. With a Personal Access Token it can do all of that
@@ -60,17 +60,18 @@ tell users to create a **scoped** PAT, not a legacy one.
 **database password** (personal by default — set at project creation, never retrievable
 afterwards, and needed for `DATABASE_URL` / `DIRECT_URL` in Prisma/Drizzle).
 
-**Open question for Phase 3.** `GET /v1/projects/{ref}/database/context` may return pooler host and
-port, which would let us assemble pooled vs direct connection strings without hardcoding
-`aws-0-<region>.pooler.supabase.com`. Verify against a live project before relying on it; fall
-back to a stored per-project template.
+**Resolved in Phase 3.** The pooler host is read from `metadata.pooler_host` when discovery
+supplies it, and with no known host the builder returns the **direct URL only** rather than
+guessing `aws-0-<region>.pooler.supabase.com` — that pattern has changed before, and a correct
+absence beats a plausible wrong answer. `GET /v1/projects/{ref}/database/context` is still worth
+checking against a live project as a source for that host.
 
 Sources: [API intro](https://supabase.com/docs/reference/api/introduction),
 [OpenAPI spec](https://api.supabase.com/api/v1-json)
 
 ---
 
-## 2. Neon (Postgres) — `neon`
+## 2. Neon (Postgres) — `neon` ✅ implemented
 
 The `watch` provider. Including it forces the architecture to be honest: a "keeper" that only
 knows how to ping would hurt a Neon user.
@@ -114,7 +115,7 @@ Sources: [Neon API](https://neon.com/docs/reference/api),
 
 ---
 
-## 3. MongoDB Atlas (M0) — `mongodb`
+## 3. MongoDB Atlas (M0) — `mongodb` — Phase 5
 
 The hardest adapter, and the one that most justifies the project. Atlas is the only provider where
 keeping alive needs a **real database driver connection**, because the Atlas Data API was removed
@@ -167,7 +168,7 @@ Sources: [free cluster limits](https://www.mongodb.com/docs/atlas/reference/free
 
 ---
 
-## 4. Upstash (Redis) — `upstash`
+## 4. Upstash (Redis) — `upstash` — Phase 6
 
 The cheapest ping in the set and a clean API. Also the clearest example of "archived, not paused".
 
@@ -204,7 +205,7 @@ Sources: [Developer API intro](https://upstash.com/docs/devops/developer-api/int
 
 ---
 
-## 5. Appwrite Cloud — `appwrite`
+## 5. Appwrite Cloud — `appwrite` — Phase 7
 
 Included knowing its keep-alive story is the weakest of the five. It earns its place because it's
 the BaaS hobbyists actually use, it's open source like Keepstack, and its policy is the most

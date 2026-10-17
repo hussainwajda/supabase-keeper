@@ -41,13 +41,15 @@ export type Project = {
   created_at: string;
 
   /**
-   * Legacy Supabase-only columns, kept until migration 0006 drops them.
-   * New code reads `external_id` and `metadata.ping_table` instead.
+   * Legacy Supabase-only columns, dropped by migration 0006. Optional because a registry that
+   * hasn't run 0006 yet still returns them; nothing writes them any more.
+   *   ref        -> external_id
+   *   ping_table -> metadata.ping_table
+   *   anon_key   -> an encrypted `server`-tier row in `secrets`
    */
-  ref: string | null;
-  ping_table: string | null;
-  /** Plaintext until Phase 2 moves it into the encrypted `secrets` table. */
-  anon_key: string | null;
+  ref?: string | null;
+  ping_table?: string | null;
+  anon_key?: string | null;
 };
 
 /** A project with its secret columns stripped — the only shape a client component may receive. */
@@ -76,5 +78,6 @@ export function toSafeProject<T extends Project>(
   project: T,
 ): Omit<T, "anon_key"> & { has_key: boolean } {
   const { anon_key, ...rest } = project;
+  // Post-0006 `anon_key` is absent entirely, and the caller ORs this with the vault lookup.
   return { ...rest, has_key: !!anon_key };
 }

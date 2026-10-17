@@ -18,6 +18,12 @@ import { listSecrets, vaultSchemaReady } from "@/lib/vault/secrets";
 import { otpAvailable } from "@/lib/vault/email";
 import { SecretSlots, type SecretSlot } from "@/components/vault/secret-form";
 import { UnlockDialog } from "@/components/vault/unlock-dialog";
+import { PausedBanner } from "@/components/providers/paused-banner";
+import { HealthPanel } from "@/components/providers/health-panel";
+import { ConnectionStrings } from "@/components/providers/connection-strings";
+import { refreshStatus, refreshUsage } from "@/app/providers/actions";
+import { UsageMeters } from "@/components/providers/usage-meters";
+import { latestUsage, usageHistory } from "@/lib/usage";
 import { deleteProject, pingNow } from "@/app/actions";
 import { cn } from "@/lib/utils";
 
@@ -44,6 +50,14 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
     : [null, false, []];
 
   const storedByKind = new Map(secrets.map((s) => [s.kind, s.id]));
+
+  // Quota meters for `watch` providers. Nothing is fetched for a `ping` provider — Supabase
+  // publishes no per-project usage, and an empty card would imply it does.
+  const usage = adapter.capabilities.watch ? await latestUsage(id) : [];
+  const usageTrends: Record<string, Awaited<ReturnType<typeof usageHistory>>> = {};
+  for (const row of usage) {
+    usageTrends[row.metric] = await usageHistory(id, row.metric);
+  }
   const secretSlots: SecretSlot[] = adapter.projectFields.map((f) => ({
     kind: f.key as SecretSlot["kind"],
     label: f.label,
@@ -90,14 +104,36 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
               <ArrowUpRightIcon aria-hidden />
             </a>
           </Button>
-          <form action={pingNow}>
-            <input type="hidden" name="id" value={project.id} />
-            <SubmitButton size="sm" pending="Pinging…">
-              Ping now
-            </SubmitButton>
-          </form>
+          {adapter.capabilities.discover && (
+            <form action={refreshStatus}>
+              <input type="hidden" name="project_id" value={project.id} />
+              <SubmitButton variant="ghost" size="sm" pending="Checking…">
+                Refresh status
+              </SubmitButton>
+            </form>
+          )}
+          {adapter.capabilities.ping && (
+            <form action={pingNow}>
+              <input type="hidden" name="id" value={project.id} />
+              <SubmitButton size="sm" pending="Pinging…">
+                Ping now
+              </SubmitButton>
+            </form>
+          )}
         </div>
       </div>
+
+      {(project.lifecycle === "paused" || project.lifecycle === "archived") && (
+        <PausedBanner
+          projectId={project.id}
+          providerName={adapter.name}
+          pauseNoun={adapter.policy.pauseNoun}
+          canRevive={adapter.capabilities.revive}
+          consoleUrl={consoleUrl}
+          deletesAfterDays={adapter.policy.deletesAfterDays}
+          pausedSince={project.last_pinged_at}
+        />
+      )}
 
       <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
         <Card>
@@ -186,6 +222,47 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
               />
             </CardContent>
           </Card>
+
+          {adapter.capabilities.watch && (
+            <Card>
+              <CardContent className="grid gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-sm font-semibold">Usage this period</h2>
+                  <form action={refreshUsage}>
+                    <input type="hidden" name="project_id" value={project.id} />
+                    <SubmitButton variant="outline" size="sm" pending="Reading…">
+                      Refresh
+                    </SubmitButton>
+                  </form>
+                </div>
+                <UsageMeters rows={usage} history={usageTrends} />
+                <p className="text-muted-foreground text-xs">
+                  {adapter.policy.summary}
+                </p>
+              </CardContent>
+            </Card>
+          )}
+
+          {adapter.capabilities.health && (
+            <Card>
+              <CardContent>
+                <HealthPanel projectId={project.id} />
+              </CardContent>
+            </Card>
+          )}
+
+          {adapter.connectionStrings && (
+            <Card>
+              <CardContent className="grid gap-2">
+                <h2 className="text-sm font-semibold">Connection strings</h2>
+                <ConnectionStrings
+                  projectId={project.id}
+                  unlocked={unlocked}
+                  hasPassword={storedByKind.has("db_password")}
+                />
+              </CardContent>
+            </Card>
+          )}
 
           <Card>
             <CardContent className="grid gap-2">

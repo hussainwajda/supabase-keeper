@@ -116,7 +116,7 @@ with their own secret and use the service role.
 
 ---
 
-## ☐ Phase 3 — Supabase, properly
+## ☑ Phase 3 — Supabase, properly
 
 Everything the Management API makes possible. This phase alone is a bigger upgrade than the rename.
 
@@ -133,9 +133,35 @@ project from Keepstack, confirm a ping logs as a SQL query, and build a working 
 from a stored password.
 **Must not break:** projects with no PAT — they keep using the anon-key path.
 
+**Built and verified 2026-10-17, except the PAT itself.** 25 adapter unit tests cover parsing
+(bare ref, API URL, dashboard URL, pooler connection string, whole `.env`), the `INACTIVE → paused`
+status mapping, credential validation, tier assignment, and connection-string assembly including
+percent-encoding. Every Management API path was then exercised live against a deliberately invalid
+token: `discover` and `status` surface the useful 401, `fetchProjectCredentials` and `health`
+degrade to `{}`/`[]` rather than throwing, and — the one that matters — **a bad PAT falls through
+to the anon-key path instead of reporting a false failure**. The sweep was re-run against the live
+registry and gave identical results to Phase 2.
+
+**Not verified:** anything needing a real `sbp_` token — discovery against your accounts, SQL
+pings, automatic key fetch, restore. Create a scoped PAT and add it under an account's
+**Credentials**.
+
+Design decisions worth recording:
+- **Sync is plan-then-apply.** A preview lists what will be imported, re-homed or updated, and
+  the apply step **re-plans server-side** rather than trusting the posted plan — the browser
+  round-trip is long enough for a project to be created or paused at the provider.
+- **A sync never deletes.** A project that vanished from the provider is reported, not removed:
+  "deleted" and "the token lost access to that organization" look identical from here, and only
+  one of them is safe to act on.
+- **Imported projects arrive with keep-alive off**, so an import never silently starts sending
+  traffic to someone's project.
+- **The pooler host is never guessed.** `aws-0-<region>.pooler.supabase.com` has changed before,
+  so with no known host the builder returns the direct URL only. A correct absence beats a
+  plausible wrong answer.
+
 ---
 
-## ☐ Phase 4 — Neon (the `watch` provider)
+## ☑ Phase 4 — Neon (the `watch` provider)
 
 Second provider, chosen deliberately to be the one that proves pinging isn't the whole product.
 
@@ -149,6 +175,30 @@ Second provider, chosen deliberately to be the one that proves pinging isn't the
 sent, and confirm the UI never offers one.
 **Must not break:** the dashboard's mixed-provider view, which now has to render two different
 project card shapes.
+
+**Built and verified 2026-10-17, except with a real key.** 19 adapter unit tests, the most
+important of which assert the negative: `capabilities.ping === false` **and** `ping === undefined`,
+so a regression can't quietly start spending someone's compute budget. Headroom projection is
+tested including its null cases (no limit, nothing used, a point-in-time metric with no period).
+Live-checked against an invalid key: every path returns an actionable message naming the
+credential rather than a stack trace.
+
+The sweep now routes by strategy — `ping` on an interval, `watch` daily, `alert_only` as a status
+check — and its response counts the three separately, because "pinged 3" and "watched 3" are
+different claims and only one of them reset an inactivity clock.
+
+**One real bug fixed on the way.** Migration 0006 had dropped `ref`, `ping_table` and `anon_key`,
+but `saveProject` still wrote all three — editing any project would have failed with a
+`42703 undefined_column`. `forWrite` now detects and strips dropped columns the way it already
+handled columns that don't exist *yet*, `ping_table` moved into `metadata`, and the drift is
+covered in both directions.
+
+**And an accessibility bug found by measuring rather than eyeballing.** Running the dataviz
+skill's contrast check on the status tokens showed light-mode `--warning` at **2.96:1** and
+`--success` at **3.25:1** on white — both failing WCAG for the 12-13px text they were already
+being used for, since Phase 0. Re-solved for the lowest lightness clearing 4.5:1 at the same hue
+and chroma: all four status inks now pass as text in both modes. Fills keep their vividness by
+using the same tokens at low opacity.
 
 ---
 
