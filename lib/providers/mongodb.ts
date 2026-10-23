@@ -9,7 +9,6 @@ import type {
   PingOutcome,
   ProjectRef,
   ProviderAdapter,
-  UsageSnapshot,
 } from "./types";
 
 const BASE = "https://cloud.mongodb.com";
@@ -511,24 +510,17 @@ export const mongodbAdapter: ProviderAdapter = {
     }
   },
 
-  /** Atlas reports no usage figures for M0, but its hard limits are worth showing. */
-  async usage(project: ProjectRef): Promise<UsageSnapshot[]> {
-    const size = project.metadata.instance_size as string | undefined;
-    if (size !== "M0") return [];
-
-    // Static plan limits rather than measured consumption — Atlas publishes no per-cluster
-    // usage for the free tier, and a card of invented numbers would be worse than none.
-    return [
-      {
-        metric: "storage_bytes",
-        value: 0,
-        limitValue: 0.5 * 1024 ** 3,
-        unit: "bytes",
-        periodStart: null,
-        periodEnd: null,
-      },
-    ];
-  },
+  /*
+   * No `usage()`, deliberately.
+   *
+   * Atlas publishes no per-cluster consumption for free tiers, so the only thing this could
+   * return is the plan's ceilings with a value of 0 — and a meter reading "0 B of 0.5 GB"
+   * states a measurement that was never taken. M0's hard limits are shown as facts by the
+   * plan-limits card instead, which is the honest surface for a number nobody measured.
+   *
+   * It did exist, unreachable behind `capabilities.watch: false`, until the cross-provider
+   * test in `__tests__/registry.test.ts` asserted that flags and methods agree.
+   */
 
   async overview(credentials: Credentials): Promise<AccountOverview> {
     const clusters = await this.discover!(credentials);

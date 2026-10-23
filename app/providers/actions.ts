@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { currentUser } from "@/lib/supabase/server";
+import { currentUser } from "@/lib/backend/user";
 import { supabaseService } from "@/lib/supabase/service";
 import { getProvider } from "@/lib/providers/registry";
 import { applySync, planSync, recordSyncFailure, type SyncPlan } from "@/lib/providers/sync";
@@ -10,7 +10,10 @@ import { resolveServerCredentials } from "@/lib/vault/resolve";
 import { audit } from "@/lib/vault/audit";
 import { toProjectRef } from "@/lib/ping";
 import type { Project } from "@/lib/registry";
-import type { HealthReport, ProviderId } from "@/lib/providers/types";
+import type { ConnectionStrings, HealthReport, ProviderId } from "@/lib/providers/types";
+import { usingNodeBackend } from "@/lib/backend/env";
+import * as api from "@/lib/backend/api";
+
 
 async function requireUser(): Promise<string> {
   const user = await currentUser();
@@ -41,7 +44,9 @@ export async function previewSync(_: SyncState | null, fd: FormData): Promise<Sy
   const provider = str(fd, "provider") as ProviderId;
 
   try {
-    const plan = await planSync(userId, accountId, provider);
+    const plan = usingNodeBackend()
+      ? await api.previewSync(accountId, provider).then((r) => r.plan)
+      : await planSync(userId, accountId, provider);
     return { plan, error: null, applied: null };
   } catch (e) {
     const message = (e as Error).message;
@@ -58,6 +63,15 @@ export async function confirmSync(_: SyncState | null, fd: FormData): Promise<Sy
   const provider = str(fd, "provider") as ProviderId;
 
   try {
+    if (usingNodeBackend()) {
+      const { notice } = await api.applySync(accountId, provider, {
+        adopt: fd.get("adopt") === "on",
+        fetchKeys: fd.get("fetch_keys") === "on",
+      });
+      revalidatePath("/", "layout");
+      return { plan: null, error: null, applied: notice };
+    }
+
     const result = await applySync(userId, accountId, provider, {
       adoptReassigned: fd.get("adopt") === "on",
       fetchCredentials: fd.get("fetch_keys") === "on",
@@ -95,6 +109,12 @@ export async function restoreProject(
   const projectId = str(fd, "project_id");
 
   try {
+    if (usingNodeBackend()) {
+      const { notice } = await api.restoreProject(projectId);
+      revalidatePath("/", "layout");
+      return { error: null, notice };
+    }
+
     const project = await ownedProject(userId, projectId);
     const adapter = getProvider(project.provider);
     if (!adapter.revive) {
@@ -137,6 +157,15 @@ export async function restoreProject(
 /** Re-read one project's status from the provider. */
 export async function refreshStatus(fd: FormData) {
   const userId = await requireUser();
+
+  if (usingNodeBackend()) {
+    // A failed status read is not worth surfacing; the next sweep retries. The API already
+    // answers 200 with `stale: true` in that case, so there is nothing to catch here.
+    await api.refreshStatus(str(fd, "project_id")).catch(() => undefined);
+    revalidatePath("/", "layout");
+    return;
+  }
+
   const project = await ownedProject(userId, str(fd, "project_id"));
   const adapter = getProvider(project.provider);
   if (!adapter.status) return;
@@ -162,6 +191,11 @@ export async function refreshStatus(fd: FormData) {
 /** Fetch per-service health on demand. Not stored — it's a point-in-time reading. */
 export async function fetchHealth(projectId: string): Promise<HealthReport[]> {
   const userId = await requireUser();
+
+  if (usingNodeBackend()) {
+    return api.fetchHealth(projectId).then((r) => r.health).catch(() => []);
+  }
+
   const project = await ownedProject(userId, projectId);
   const adapter = getProvider(project.provider);
   if (!adapter.health) return [];
@@ -189,6 +223,12 @@ export async function fetchProjectKeys(
   const userId = await requireUser();
 
   try {
+    if (usingNodeBackend()) {
+      const { notice } = await api.fetchProjectKeys(str(fd, "project_id"));
+      revalidatePath("/", "layout");
+      return { error: null, notice };
+    }
+
     const project = await ownedProject(userId, str(fd, "project_id"));
     const adapter = getProvider(project.provider);
     if (!adapter.fetchProjectCredentials) {
@@ -199,9 +239,15 @@ export async function fetchProjectKeys(
       accountId: project.account_id,
       projectId: project.id,
     });
-    if (!credentials.pat) {
+    // Which account credential this needs is the adapter's business, not this action's:
+    // Supabase wants a PAT, Upstash an email *and* an API key. Hardcoding `pat` here meant
+    // any other provider's key fetch failed with advice about a token it never asked for.
+    const missing = adapter.accountFields
+      .filter((f) => f.tier === "server" && !credentials[f.key])
+      .map((f) => f.label.toLowerCase());
+    if (missing.length > 0) {
       return {
-        error: "Add a personal access token to this project's account first.",
+        error: `Add this account's ${missing.join(" and ")} first — that's what Keepstack asks ${adapter.name} with.`,
         notice: null,
       };
     }
@@ -214,7 +260,7 @@ export async function fetchProjectKeys(
 
     const { putSecret } = await import("@/lib/vault/secrets");
     for (const [kind, value] of Object.entries(fetched)) {
-      await putSecret(userId, { projectId: project.id }, kind as never, "server", value, "Fetched from the provider");
+      await putSecret(userId, { projectId: project.id }, kind, "server", value, "Fetched from the provider");
     }
 
     revalidatePath("/", "layout");
@@ -227,6 +273,8 @@ export async function fetchProjectKeys(
 export type ConnectionStringState = {
   pooled: string | null;
   direct: string | null;
+  /** The provider's names for the pair; see `ConnectionStrings.labels`. */
+  labels?: ConnectionStrings["labels"];
   error: string | null;
 };
 
@@ -243,6 +291,13 @@ export async function buildConnectionStrings(
   const userId = await requireUser();
 
   try {
+    if (usingNodeBackend()) {
+      // The assembled strings contain the database password in clear, which is why the API
+      // returns them and never stores them — and why this needs the vault open at that end.
+      const strings = await api.connectionStrings(str(fd, "project_id"));
+      return { ...strings, error: null };
+    }
+
     const project = await ownedProject(userId, str(fd, "project_id"));
     const adapter = getProvider(project.provider);
     if (!adapter.connectionStrings) {
@@ -299,6 +354,13 @@ export async function buildConnectionStrings(
 /** Read a `watch` provider's usage on demand. */
 export async function refreshUsage(fd: FormData) {
   const userId = await requireUser();
+
+  if (usingNodeBackend()) {
+    await api.refreshUsage(str(fd, "project_id"));
+    revalidatePath("/", "layout");
+    return;
+  }
+
   const project = await ownedProject(userId, str(fd, "project_id"));
   const { captureUsage } = await import("@/lib/usage");
   await captureUsage(project);

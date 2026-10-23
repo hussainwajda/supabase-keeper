@@ -8,6 +8,9 @@ import {
   sessionTokenHash,
 } from "@/lib/crypto/dek";
 import { audit } from "./audit";
+import { usingNodeBackend } from "@/lib/backend/env";
+import * as api from "@/lib/backend/api";
+
 
 export const VAULT_COOKIE = "ks_vault";
 /** Sudo mode lasts 10 minutes, like GitHub's. Long enough to do a task, short enough to matter. */
@@ -82,11 +85,18 @@ export async function currentDek(userId: string): Promise<Buffer | null> {
 }
 
 export async function vaultUnlocked(userId: string): Promise<boolean> {
+  // On the Node backend the DEK never enters this process — it is sealed in the API's own
+  // session store and unsealed there. So "is the vault open" becomes a question we ask rather
+  // than one we answer locally, which is why `currentDek` has no node branch.
+  if (usingNodeBackend()) return (await api.vaultStatus()).unlocked;
+
   return (await currentDek(userId)) !== null;
 }
 
 /** Remaining sudo time in seconds, for the countdown in the UI. */
 export async function vaultSessionRemaining(userId: string): Promise<number> {
+  if (usingNodeBackend()) return (await api.vaultStatus()).remaining_seconds;
+
   const token = (await cookies()).get(VAULT_COOKIE)?.value;
   if (!token) return 0;
 
@@ -131,6 +141,8 @@ export type VaultSessionRow = {
 };
 
 export async function listVaultSessions(userId: string): Promise<VaultSessionRow[]> {
+  if (usingNodeBackend()) return (await api.listVaultSessions()).sessions;
+
   const { data, error } = await supabaseService()
     .from("vault_sessions")
     .select("id, method, ip, user_agent, expires_at, created_at")

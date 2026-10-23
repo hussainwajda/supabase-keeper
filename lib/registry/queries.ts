@@ -2,7 +2,23 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { supabaseServer } from "@/lib/supabase/server";
 import { supabaseService } from "@/lib/supabase/service";
+import { usingNodeBackend } from "@/lib/backend/env";
+import * as api from "@/lib/backend/api";
 import type { Account, PingLog, Project, ProjectWithAccount } from "./types";
+
+/**
+ * Two backends, one set of function signatures.
+ *
+ * Each exported read below starts by asking which backend is active and, under
+ * `KEEPSTACK_BACKEND=node`, hands off to the REST client instead of querying Postgres. The
+ * dispatch lives here rather than at the call sites on purpose: there are ~36 of them across
+ * the pages and actions, and none of them has any business knowing where the data comes from.
+ * `app/page.tsx` still just calls `listProjects()`.
+ *
+ * The `db?: SupabaseClient` parameter is ignored in node mode. It exists so the two
+ * service-role callers (the sweep and the legacy claim) can bypass RLS, and neither concept
+ * applies to the Node backend — it has no RLS to bypass, and its own sweep runs in-process.
+ */
 
 /**
  * Every read and write below runs as the signed-in user by default, so RLS in Postgres is
@@ -49,6 +65,8 @@ function normalizeAccount(row: Record<string, unknown>): Account {
 }
 
 export async function listAccounts(db?: SupabaseClient): Promise<Account[]> {
+  if (usingNodeBackend()) return (await api.listAccounts()).accounts;
+
   const { data, error } = await (await client(db))
     .from("accounts")
     .select("*")
@@ -58,6 +76,8 @@ export async function listAccounts(db?: SupabaseClient): Promise<Account[]> {
 }
 
 export async function listProjects(db?: SupabaseClient): Promise<ProjectWithAccount[]> {
+  if (usingNodeBackend()) return (await api.listProjects()).projects;
+
   const { data, error } = await (await client(db))
     .from("projects")
     .select("*, account:accounts(*)")
@@ -77,6 +97,18 @@ export async function getProject(
   id: string,
   db?: SupabaseClient,
 ): Promise<ProjectWithAccount | null> {
+  if (usingNodeBackend()) {
+    try {
+      return (await api.getProject(id)).project;
+    } catch (e) {
+      // A 404 here means "not yours or not there", which the Supabase path expresses as a
+      // null row rather than an error. Same answer, so the callers need no new branch.
+      const { ApiError } = await import("@/lib/backend/client");
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
   const { data, error } = await (await client(db))
     .from("projects")
     .select("*, account:accounts(*)")
@@ -97,6 +129,8 @@ export async function recentLogs(
   limit = 15,
   db?: SupabaseClient,
 ): Promise<PingLog[]> {
+  if (usingNodeBackend()) return (await api.recentLogs(projectId, limit)).logs;
+
   const { data, error } = await (await client(db))
     .from("ping_logs")
     .select("*")
@@ -137,6 +171,12 @@ export async function keepAliveProjects(userId?: string): Promise<Project[]> {
 let migrationApplied: boolean | null = null;
 
 export async function schemaStatus(): Promise<{ migration0002: boolean }> {
+  // There are no hand-run migrations on the Node backend — `ensureIndexes()` runs at boot,
+  // before the first request — so the question it answers has no node equivalent. Reporting
+  // "applied" keeps the dashboard's migration banner hidden, which is the honest outcome:
+  // there is nothing for the user to go and run.
+  if (usingNodeBackend()) return { migration0002: true };
+
   if (migrationApplied !== null) return { migration0002: migrationApplied };
   const { error } = await supabaseService()
     .from("projects")
@@ -162,6 +202,8 @@ export function slotsUsed(projects: { account_id: string | null }[]): Record<str
  * so you can only ever export your own rows.
  */
 export async function exportRegistry() {
+  if (usingNodeBackend()) return api.exportRegistry();
+
   const db = await supabaseServer();
   const [accounts, projects] = await Promise.all([listAccounts(db), listProjects(db)]);
   const { data: logs, error } = await db

@@ -1,0 +1,28 @@
+{
+  "name": "keepstack-backend-node",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Keepstack's optional Node + MongoDB backend \u2014 the same registry, vault and provider logic as the Next.js app, behind a REST API, with no Supabase anywhere.",
+  "license": "MIT",
+  "scripts": {
+    "dev": "tsx --env-file-if-exists=.env watch src/index.ts",
+    "start": "tsx --env-file-if-exists=.env src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "indexes": "tsx --env-file-if-exists=.env scripts/ensure-indexes.ts",
+    "migrate": "tsx --env-file-if-exists=.env scripts/migrate-from-supabase.ts",
+    "set-password": "tsx --env-file-if-exists=.env scripts/set-password.ts",
+    "test": "KEEPSTACK_MASTER_KEY=dGVzdC1tYXN0ZXIta2V5LWZvci11bml0LXRlc3RzLW9ubHk= KEEPSTACK_PIN_PEPPER=dGVzdC1waW4tcGVwcGVyLWZvci11bml0LXRlc3RzLW9ubHk= tsx --test src/__tests__/*.test.ts"
+  },
+  "dependencies": {
+    "express": "5.1.0",
+    "mongodb": "6.21.0",
+    "tsx": "4.20.6"
+  },
+  "devDependencies": {
+    "@supabase/supabase-js": "^2.58.0",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -1,10 +1,9 @@
 import Link from "next/link";
 import { listAccounts, listProjects, slotsUsed, type Account } from "@/lib/registry";
 import { activeProviders, getProvider } from "@/lib/providers/registry";
-import { currentUser } from "@/lib/supabase/server";
-import { vaultConfigured } from "@/lib/crypto/env";
+import { currentUser } from "@/lib/backend/user";
 import { vaultStatus, vaultUnlocked } from "@/lib/vault";
-import { listSecrets, vaultSchemaReady } from "@/lib/vault/secrets";
+import { listSecrets, vaultReady } from "@/lib/vault/secrets";
 import { otpAvailable } from "@/lib/vault/email";
 import { SecretSlots, type SecretSlot } from "@/components/vault/secret-form";
 import { UnlockDialog } from "@/components/vault/unlock-dialog";
@@ -76,7 +75,7 @@ function AccountFields({ a, providers }: { a?: Account; providers: { id: string;
       <Field
         label="Notes"
         htmlFor={`notes-${uid}`}
-        hint="No passwords here — the encrypted vault arrives in Phase 2."
+        hint="Plain text, visible to you only. Passwords belong under Credentials, where they are encrypted."
       >
         <Input id={`notes-${uid}`} name="notes" defaultValue={a?.notes ?? ""} />
       </Field>
@@ -90,8 +89,8 @@ export default async function AccountsPage() {
   const providers = activeProviders().map((a) => ({ id: a.id, name: a.name }));
   const used = slotsUsed(projects);
 
-  const vaultReady = vaultConfigured() && (await vaultSchemaReady());
-  const [status, unlocked, allSecrets] = vaultReady && user
+  const ready = await vaultReady();
+  const [status, unlocked, allSecrets] = ready && user
     ? await Promise.all([vaultStatus(user.id), vaultUnlocked(user.id), listSecrets()])
     : [null, false, []];
 
@@ -101,11 +100,11 @@ export default async function AccountsPage() {
       allSecrets.filter((s) => s.account_id === accountId).map((s) => [s.kind, s.id]),
     );
     return getProvider(provider).accountFields.map((f) => ({
-      kind: f.key as SecretSlot["kind"],
+      kind: f.key,
       label: f.label,
       help: f.help,
       tier: f.tier,
-      existingId: stored.get(f.key as SecretSlot["kind"]) ?? null,
+      existingId: stored.get(f.key) ?? null,
     }));
   }
 
@@ -185,7 +184,7 @@ export default async function AccountsPage() {
                   </ul>
                 )}
 
-                {vaultReady && status?.initialized && (
+                {ready && status?.initialized && (
                   <details className="mt-1">
                     <summary className="text-muted-foreground cursor-pointer text-xs">
                       Credentials
@@ -210,7 +209,7 @@ export default async function AccountsPage() {
                   </details>
                 )}
 
-                {vaultReady && getProvider(a.provider).capabilities.discover && (
+                {ready && getProvider(a.provider).capabilities.discover && (
                   <details className="mt-1" open={a.last_sync_status === "error"}>
                     <summary className="text-muted-foreground cursor-pointer text-xs">
                       Sync projects

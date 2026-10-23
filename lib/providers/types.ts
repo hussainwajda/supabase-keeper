@@ -152,10 +152,20 @@ export type UsageSnapshot = {
 };
 
 export type ConnectionStrings = {
-  /** Pooled connection, for serverless runtimes. Prisma's `DATABASE_URL`. */
+  /** Pooled connection, for serverless runtimes. Prisma's `DATABASE_URL` by default. */
   pooled: string | null;
-  /** Direct connection, for migrations. Prisma's `DIRECT_URL`. */
+  /** Direct connection, for migrations. Prisma's `DIRECT_URL` by default. */
   direct: string | null;
+  /**
+   * What this provider calls the two strings. Not every provider speaks Prisma: Upstash's
+   * pair is a REST URL and a `rediss://` URL, and labelling those `DATABASE_URL` /
+   * `DIRECT_URL` would send someone to paste the wrong one into their app. Omitted means the
+   * Postgres defaults.
+   */
+  labels?: {
+    pooled: { name: string; hint: string };
+    direct: { name: string; hint: string };
+  };
 };
 
 /** Result of `parse()` — what we could pull out of a pasted blob. */

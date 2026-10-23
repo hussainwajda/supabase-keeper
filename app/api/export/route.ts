@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { currentUser } from "@/lib/supabase/server";
+import { currentUser } from "@/lib/backend/user";
 import { exportRegistry } from "@/lib/registry";
 
 export const dynamic = "force-dynamic";

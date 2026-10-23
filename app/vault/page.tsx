@@ -7,13 +7,13 @@ import {
   ShieldCheckIcon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { currentUser, supabaseServer } from "@/lib/supabase/server";
+import { currentUser } from "@/lib/backend/user";
 import { listAccounts, listProjects } from "@/lib/registry";
 import { vaultEnvProblems } from "@/lib/crypto/env";
 import { listVaultSessions, vaultSessionRemaining, vaultStatus, vaultUnlocked } from "@/lib/vault";
 import { listSecrets, vaultSchemaReady } from "@/lib/vault/secrets";
 import { otpAvailable } from "@/lib/vault/email";
-import type { AuditRow } from "@/lib/vault/audit";
+import { listAuditEntries } from "@/lib/vault/audit";
 import { lockEverywhere, lockNow } from "@/app/vault/actions";
 import { SubmitButton } from "@/components/buttons";
 import { Button } from "@/components/ui/button";
@@ -130,15 +130,7 @@ export default async function VaultPage() {
     listProjects(),
   ]);
 
-  // Through the user client, so the `audit_log: read own` policy enforces the scope rather
-  // than this `.eq()` being the only thing standing between users.
-  const { data: auditData } = await (await supabaseServer())
-    .from("audit_log")
-    .select("id, action, target_type, target_id, method, ip, user_agent, detail, created_at")
-    .eq("user_id", user.id)
-    .order("created_at", { ascending: false })
-    .limit(40);
-  const auditLog = (auditData ?? []) as AuditRow[];
+  const auditLog = await listAuditEntries(user.id, 40);
 
   const accountName = new Map(accounts.map((a) => [a.id, a.label ?? a.email]));
   const projectName = new Map(projects.map((p) => [p.id, p.name]));

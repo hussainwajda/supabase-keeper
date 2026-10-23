@@ -1,6 +1,7 @@
 "use client";
 
-import { DownloadIcon, LogOutIcon, ShieldIcon } from "lucide-react";
+import { useFormStatus } from "react-dom";
+import { DownloadIcon, Loader2Icon, LogOutIcon, ShieldIcon } from "lucide-react";
 import { signOut } from "@/app/auth/actions";
 import { Button } from "@/components/ui/button";
 import {
@@ -67,13 +68,31 @@ export function AccountMenu({
         <DropdownMenuItem asChild>
           {/* A form POST, so no prefetch or image request can sign you out. */}
           <form action={signOut}>
-            <button type="submit" className="flex w-full cursor-pointer items-center gap-2">
-              <LogOutIcon aria-hidden />
-              Sign out
-            </button>
+            <SignOutButton />
           </form>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/**
+ * Signing out hits the network, and the menu stays open while it does. Without this the item
+ * looked inert for the whole round trip — the one place in the app a click had no feedback.
+ *
+ * Split into its own component because `useFormStatus` reads the nearest enclosing form, and
+ * a hook called in `AccountMenu` itself would be outside it.
+ */
+function SignOutButton() {
+  const { pending } = useFormStatus();
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      className="flex w-full cursor-pointer items-center gap-2 disabled:opacity-60"
+    >
+      {pending ? <Loader2Icon className="animate-spin" aria-hidden /> : <LogOutIcon aria-hidden />}
+      {pending ? "Signing out…" : "Sign out"}
+    </button>
   );
 }

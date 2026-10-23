@@ -8,20 +8,33 @@ import {
   sealServerSecret,
   type SecretTier,
 } from "@/lib/crypto/secrets";
-import { assertVaultEnv } from "@/lib/crypto/env";
+import { assertVaultEnv, vaultConfigured } from "@/lib/crypto/env";
 import { audit } from "./audit";
 import { currentDek } from "./session";
+import { usingNodeBackend } from "@/lib/backend/env";
+import * as api from "@/lib/backend/api";
+import { serverCredentialKinds } from "./kinds";
 
+
+/**
+ * A secret's kind is the `CredentialField.key` its adapter declared, so this is an open set:
+ * every provider added may introduce new kinds. The literals below are the ones in use today
+ * and exist for autocompletion; `(string & {})` keeps that while still accepting a kind a
+ * newer adapter declares. The authoritative runtime check is `isKnownSecretKind`, which asks
+ * the registry — see lib/vault/kinds.ts for why that matters.
+ */
 export type SecretKind =
   | "account_password"
   | "pat"
   | "api_key"
   | "api_email"
-  | "service_account"
+  | "sa_client_id"
+  | "sa_client_secret"
   | "db_password"
   | "anon_key"
   | "connection_string"
-  | "rest_token";
+  | "rest_token"
+  | (string & {});
 
 export type SecretOwner = { accountId?: string | null; projectId?: string | null };
 
@@ -53,6 +66,8 @@ function ownerFilter<T>(query: T, owner: SecretOwner): T {
  * summary columns — `select *` on this table is the thing docs/SECURITY.md §6 forbids.
  */
 export async function listSecrets(owner?: SecretOwner): Promise<SecretSummary[]> {
+  if (usingNodeBackend()) return (await api.listSecrets(owner)).secrets;
+
   const db = await supabaseServer();
   let query = db.from("secrets").select(SUMMARY_COLUMNS).order("created_at");
   if (owner?.projectId) query = query.eq("project_id", owner.projectId);
@@ -245,21 +260,62 @@ export async function deleteSecret(userId: string, secretId: string): Promise<vo
 }
 
 /**
- * Project ids that have an `anon_key` stored in the vault.
+ * Project ids the unattended sweep has usable credentials for.
  *
- * The dashboard's "missing anon key" warning used to read the plaintext column. Once that
+ * The dashboard's "missing credentials" warning used to read the plaintext column. Once that
  * column is gone (migration 0006) the only source of truth is here, so this keeps the
  * warning accurate across all three states: plaintext, encrypted, and neither.
+ *
+ * It asks the adapter which kinds count rather than looking for `anon_key`. That hard-coded
+ * kind is Supabase's, so every Atlas project reported "missing credentials" however many
+ * connection strings were saved against it — while the sweep, which resolves credentials by
+ * owner and tier rather than by kind, pinged it happily. Account-scoped secrets count too: a
+ * Supabase project with no key of its own is still pingable through its account's `pat`.
  */
-export async function projectIdsWithStoredKey(userId: string): Promise<Set<string>> {
-  const { data, error } = await supabaseService()
-    .from("secrets")
-    .select("project_id")
-    .eq("user_id", userId)
-    .eq("kind", "anon_key")
-    .not("project_id", "is", null);
-  if (error) return new Set();
-  return new Set((data ?? []).map((r) => r.project_id as string));
+export async function projectIdsWithStoredKey(
+  userId: string,
+  projects: { id: string; provider: string; account_id: string | null }[],
+): Promise<Set<string>> {
+  if (projects.length === 0) return new Set();
+
+  const rows: { kind: string; account_id: string | null; project_id: string | null }[] = [];
+
+  if (usingNodeBackend()) {
+    // The summary list is already scoped to the caller by the API, so no user filter is
+    // needed here — and none would be trustworthy from this side anyway.
+    const { secrets } = await api.listSecrets();
+    rows.push(...secrets.filter((s) => s.tier === "server"));
+  } else {
+    const { data, error } = await supabaseService()
+      .from("secrets")
+      .select("kind, account_id, project_id")
+      .eq("user_id", userId)
+      .eq("tier", "server");
+    if (error) return new Set();
+    rows.push(...((data ?? []) as typeof rows));
+  }
+
+  const kindsByOwner = new Map<string, Set<string>>();
+  for (const row of rows) {
+    for (const owner of [row.account_id, row.project_id]) {
+      if (!owner) continue;
+      const kinds = kindsByOwner.get(owner) ?? new Set<string>();
+      kinds.add(row.kind);
+      kindsByOwner.set(owner, kinds);
+    }
+  }
+
+  const ready = new Set<string>();
+  for (const project of projects) {
+    const usable = serverCredentialKinds(project.provider);
+    if (usable.size === 0) continue;
+    const held = [
+      ...(kindsByOwner.get(project.id) ?? []),
+      ...(project.account_id ? (kindsByOwner.get(project.account_id) ?? []) : []),
+    ];
+    if (held.some((kind) => usable.has(kind))) ready.add(project.id);
+  }
+  return ready;
 }
 
 /**
@@ -274,9 +330,28 @@ export async function projectIdsWithStoredKey(userId: string): Promise<Set<strin
 let vaultSchemaApplied: boolean | null = null;
 
 export async function vaultSchemaReady(): Promise<boolean> {
+  // Collections and indexes are applied at boot on the Node backend, so the "has the SQL been
+  // run yet" question it answers cannot be unanswered there.
+  if (usingNodeBackend()) return true;
+
   if (vaultSchemaApplied !== null) return vaultSchemaApplied;
   const { error } = await supabaseService().from("secrets").select("id").limit(1);
   // PGRST205 = table not found in the schema cache; 42P01 = undefined_table.
   vaultSchemaApplied = !(error && (error.code === "PGRST205" || error.code === "42P01"));
   return vaultSchemaApplied;
+}
+
+/**
+ * Is the vault usable at all?
+ *
+ * Two questions in one, because the answer differs by backend and no page should have to know
+ * that. On Supabase it is "does this process hold the encryption keys, and have the vault
+ * tables been created". On the Node backend the keys live in *that* service, so asking our own
+ * environment would always say no and the vault UI would vanish — the question becomes one to
+ * forward, which is why `/api/vault/status` reports `configured` and `problems` rather than
+ * just failing when a key is missing.
+ */
+export async function vaultReady(): Promise<boolean> {
+  if (usingNodeBackend()) return (await api.vaultStatus()).configured;
+  return vaultConfigured() && (await vaultSchemaReady());
 }

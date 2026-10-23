@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { currentUser } from "@/lib/supabase/server";
+import { currentUser } from "@/lib/backend/user";
 import {
   changePin,
   disableRecovery,
@@ -16,12 +16,35 @@ import {
   PIN_PATTERN,
 } from "@/lib/vault";
 import { deleteSecret, putSecret, revealSecret, type SecretKind } from "@/lib/vault/secrets";
+import { isKnownSecretKind } from "@/lib/vault/kinds";
 import { currentDek } from "@/lib/vault/session";
 import { sendOtp, verifyOtp } from "@/lib/vault/otp";
 import { otpAvailable } from "@/lib/vault/email";
 import { migratePlaintextKeys } from "@/lib/vault/migrate-keys";
 import { audit } from "@/lib/vault/audit";
 import type { SecretTier } from "@/lib/crypto/secrets";
+import { usingNodeBackend } from "@/lib/backend/env";
+import { ApiError } from "@/lib/backend/client";
+import * as api from "@/lib/backend/api";
+
+/**
+ * Run an API call and shape the outcome like the Supabase branch does.
+ *
+ * Every action in this file returns `{error, notice}` so the vault forms can render the
+ * message in place. The API already produces the user-facing wording — "Wrong PIN. 4 attempts
+ * left before the vault locks", "Too many wrong attempts. Try again in 15 minutes" — because
+ * it was ported from these same actions, so there is nothing to re-translate.
+ */
+async function viaApi(call: () => Promise<{ notice?: string }>): Promise<ActionResult> {
+  try {
+    const { notice } = await call();
+    revalidatePath("/", "layout");
+    return { error: null, notice: notice ?? null };
+  } catch (e) {
+    if (e instanceof ApiError) return { error: e.message, notice: null };
+    throw e;
+  }
+}
 
 async function requireIdentity(): Promise<{ id: string; email: string }> {
   const user = await currentUser();
@@ -40,6 +63,8 @@ export async function setupPin(_: ActionResult | null, fd: FormData): Promise<Ac
   const { id } = await requireIdentity();
   const pin = str(fd, "pin");
   const confirm = str(fd, "confirm");
+
+  if (usingNodeBackend()) return viaApi(() => api.setupPin(pin, confirm));
 
   if (!PIN_PATTERN.test(pin)) return fail("Use 4 to 8 digits.");
   if (pin !== confirm) return fail("The two PINs don't match.");
@@ -63,6 +88,8 @@ export async function updatePin(_: ActionResult | null, fd: FormData): Promise<A
   const { id } = await requireIdentity();
   const pin = str(fd, "pin");
   const confirm = str(fd, "confirm");
+
+  if (usingNodeBackend()) return viaApi(() => api.changePin(pin, confirm));
 
   if (!PIN_PATTERN.test(pin)) return fail("Use 4 to 8 digits.");
   if (pin !== confirm) return fail("The two PINs don't match.");
@@ -88,6 +115,8 @@ export async function unlockWithPin(_: ActionResult | null, fd: FormData): Promi
   const { id } = await requireIdentity();
   const pin = str(fd, "pin");
   if (!pin) return fail("Enter your PIN.");
+
+  if (usingNodeBackend()) return viaApi(() => api.unlockWithPin(pin));
 
   const result = await unwrapWithPin(id, pin);
 
@@ -118,6 +147,9 @@ export async function requestOtp(_: ActionResult | null, fd: FormData): Promise<
   if (!email) return fail("Your account has no email address to send a code to.");
 
   const purpose = str(fd, "purpose") === "pin_reset" ? "pin_reset" : "vault_unlock";
+
+  if (usingNodeBackend()) return viaApi(() => api.requestOtp(purpose));
+
   const sent = await sendOtp(id, email, purpose);
   if (!sent.ok) return fail(sent.reason);
 
@@ -128,6 +160,8 @@ export async function unlockWithOtp(_: ActionResult | null, fd: FormData): Promi
   const { id } = await requireIdentity();
   const code = str(fd, "code");
   if (!code) return fail("Enter the code from your email.");
+
+  if (usingNodeBackend()) return viaApi(() => api.unlockWithOtp(code));
 
   const verified = await verifyOtp(id, "vault_unlock", code);
   if (!verified.ok) {
@@ -167,6 +201,8 @@ export async function resetPinWithOtp(
   const pin = str(fd, "pin");
   const confirm = str(fd, "confirm");
 
+  if (usingNodeBackend()) return viaApi(() => api.resetPin(code, pin, confirm));
+
   if (!PIN_PATTERN.test(pin)) return fail("Use 4 to 8 digits.");
   if (pin !== confirm) return fail("The two PINs don't match.");
 
@@ -190,12 +226,22 @@ export async function resetPinWithOtp(
 
 export async function lockNow() {
   const { id } = await requireIdentity();
+  if (usingNodeBackend()) {
+    await api.lockVault();
+    revalidatePath("/", "layout");
+    return;
+  }
   await lockVault(id);
   revalidatePath("/", "layout");
 }
 
 export async function lockEverywhere() {
   const { id } = await requireIdentity();
+  if (usingNodeBackend()) {
+    await api.lockAllVaultSessions();
+    revalidatePath("/", "layout");
+    return;
+  }
   await lockAllSessions(id);
   revalidatePath("/", "layout");
 }
@@ -206,9 +252,13 @@ export async function turnOffRecovery(_: ActionResult | null, fd: FormData): Pro
   const { id } = await requireIdentity();
 
   // Typed confirmation, because this is irreversible and the consequence is total loss.
+  // Checked here *and* at the API, which re-checks it for the same reason the Supabase branch
+  // re-checks things the UI already validated: a hidden control is not a control.
   if (str(fd, "confirm") !== "no recovery") {
     return fail('Type "no recovery" exactly to confirm.');
   }
+
+  if (usingNodeBackend()) return viaApi(() => api.disableRecovery(str(fd, "confirm")));
 
   const status = await vaultStatus(id);
   if (!status.initialized) return fail("Set up a vault PIN first.");
@@ -226,23 +276,16 @@ export async function turnOffRecovery(_: ActionResult | null, fd: FormData): Pro
 
 // ---------- secrets ----------
 
-const KINDS: SecretKind[] = [
-  "account_password",
-  "pat",
-  "api_key",
-  "api_email",
-  "service_account",
-  "db_password",
-  "anon_key",
-  "connection_string",
-  "rest_token",
-];
-
 export async function saveSecret(_: ActionResult | null, fd: FormData): Promise<ActionResult> {
   const { id } = await requireIdentity();
 
+  // Valid kinds come from the adapters themselves, so a new provider's credentials are
+  // storable the moment its adapter declares them. A hand-written list here fell behind the
+  // adapters once already and made Atlas service accounts unsaveable.
   const kind = str(fd, "kind") as SecretKind;
-  if (!KINDS.includes(kind)) return fail("Unknown secret type.");
+  if (!isKnownSecretKind(kind)) {
+    return fail(`No provider asks for a "${kind}" credential, so there's nowhere to use it.`);
+  }
 
   const tier: SecretTier = str(fd, "tier") === "server" ? "server" : "personal";
   const value = String(fd.get("value") ?? "");
@@ -251,6 +294,19 @@ export async function saveSecret(_: ActionResult | null, fd: FormData): Promise<
   const accountId = str(fd, "account_id") || null;
   const projectId = str(fd, "project_id") || null;
   if (!accountId && !projectId) return fail("A secret must belong to an account or a project.");
+
+  if (usingNodeBackend()) {
+    return viaApi(() =>
+      api.putSecret({
+        kind,
+        tier,
+        value,
+        label: str(fd, "label") || null,
+        account_id: accountId,
+        project_id: projectId,
+      }),
+    );
+  }
 
   try {
     await putSecret(id, { accountId, projectId }, kind, tier, value, str(fd, "label") || null);
@@ -269,6 +325,16 @@ export async function reveal(_: RevealState | null, fd: FormData): Promise<Revea
   const secretId = str(fd, "secret_id");
   if (!secretId) return { value: null, error: "No secret specified.", secretId: null };
 
+  if (usingNodeBackend()) {
+    try {
+      const { value } = await api.revealSecret(secretId);
+      return { value, error: null, secretId };
+    } catch (e) {
+      if (e instanceof ApiError) return { value: null, error: e.message, secretId };
+      throw e;
+    }
+  }
+
   const result = await revealSecret(id, secretId, null);
   if (result.ok) return { value: result.value, error: null, secretId };
 
@@ -284,6 +350,11 @@ export async function reveal(_: RevealState | null, fd: FormData): Promise<Revea
 
 export async function removeSecret(fd: FormData) {
   const { id } = await requireIdentity();
+  if (usingNodeBackend()) {
+    await api.deleteSecret(str(fd, "secret_id"));
+    revalidatePath("/", "layout");
+    return;
+  }
   await deleteSecret(id, str(fd, "secret_id"));
   revalidatePath("/", "layout");
 }
@@ -292,6 +363,12 @@ export async function removeSecret(fd: FormData) {
 
 export async function encryptSavedKeys(): Promise<void> {
   const { id } = await requireIdentity();
+
+  if (usingNodeBackend()) {
+    // Nothing to do: the Node backend never stored a plaintext key, and any that existed in a
+    // migrated Supabase registry were encrypted by the migration script.
+    throw new Error("There are no plaintext keys to encrypt on the Node backend.");
+  }
 
   // A PIN first. Without one there is no vault session to open, and reveal is gated on a
   // session — so migrating now would produce secrets the owner could never read back.

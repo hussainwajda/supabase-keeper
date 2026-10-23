@@ -59,7 +59,12 @@ export type ProjectWithAccount = Project & { account: Account | null };
 export type SafeProjectWithAccount = SafeProject & { account: Account | null };
 
 export type PingLog = {
-  id: number;
+  /**
+   * `number` under Supabase (a Postgres `bigint`), `string` under the Node backend (a UUID —
+   * see backend-node/src/db/ids.ts). Widened rather than cast at the boundary because it is
+   * only ever a React key; nothing does arithmetic on it.
+   */
+  id: number | string;
   project_id: string;
   status: string;
   strategy: Strategy;

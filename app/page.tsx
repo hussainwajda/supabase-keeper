@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { listAccounts, listProjects, schemaStatus, slotsUsed, toSafeProject } from "@/lib/registry";
 import { claimAvailable } from "@/lib/registry/claim";
-import { currentUser } from "@/lib/supabase/server";
+import { currentUser } from "@/lib/backend/user";
 import { activeProviders, getProvider } from "@/lib/providers/registry";
 import type { Policy, ProviderId } from "@/lib/providers/types";
 import { ProjectBoard, type BoardProject, type PolicyMap } from "@/components/project-board";
@@ -17,8 +17,7 @@ import { MigrationNotice } from "@/components/migration-notice";
 import { ClaimNotice } from "@/components/claim-notice";
 import { EncryptKeysNotice } from "@/components/vault/encrypt-keys-notice";
 import { keyMigrationStatus } from "@/lib/vault/migrate-keys";
-import { projectIdsWithStoredKey, vaultSchemaReady } from "@/lib/vault/secrets";
-import { vaultConfigured } from "@/lib/crypto/env";
+import { projectIdsWithStoredKey, vaultReady } from "@/lib/vault/secrets";
 import { vaultStatus } from "@/lib/vault";
 
 export const dynamic = "force-dynamic";
@@ -55,16 +54,23 @@ export default async function Dashboard() {
     listAccounts(),
     schemaStatus(),
     claimAvailable(user?.email ?? null),
-    vaultConfigured() && (await vaultSchemaReady())
-      ? keyMigrationStatus()
-      : Promise.resolve({ pending: 0, columnDropped: false }),
+    vaultReady().then((ready) =>
+      ready ? keyMigrationStatus() : { pending: 0, columnDropped: false },
+    ),
   ]);
 
   // A project counts as having a key if it's in the vault OR still in the legacy column.
-  const vaultReady = vaultConfigured() && (await vaultSchemaReady());
-  const vaultKeyIds =
-    vaultReady && user ? await projectIdsWithStoredKey(user.id) : new Set<string>();
-  const pinReady = vaultReady && user ? (await vaultStatus(user.id)).initialized : false;
+  // These two don't depend on each other, so they go together — awaited in sequence they were
+  // two round trips stacked in front of the first paint. `vaultStatus` is deduped per request
+  // and `vaultReady` already asked for it, so the pair now costs one call, not three.
+  const ready = await vaultReady();
+  const [vaultKeyIds, pinReady] =
+    ready && user
+      ? await Promise.all([
+          projectIdsWithStoredKey(user.id, projects),
+          vaultStatus(user.id).then((s) => s.initialized),
+        ])
+      : [new Set<string>(), false];
 
   const migrationSql = schema.migration0002
     ? null

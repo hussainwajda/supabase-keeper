@@ -3,6 +3,7 @@ import { supabaseService } from "@/lib/supabase/service";
 import { sealServerSecret } from "@/lib/crypto/secrets";
 import { vaultConfigured } from "@/lib/crypto/env";
 import { audit } from "./audit";
+import { usingNodeBackend } from "@/lib/backend/env";
 
 /**
  * Move plaintext `projects.anon_key` values into encrypted `server`-tier secrets.
@@ -24,6 +25,11 @@ export type KeyMigrationStatus = {
 };
 
 export async function keyMigrationStatus(): Promise<KeyMigrationStatus> {
+  // The Node backend never had a plaintext `anon_key` field, so there is nothing pending and
+  // the dashboard's "encrypt your saved keys" banner should stay hidden. (Any plaintext keys
+  // in a migrated Supabase registry were encrypted by the migration script itself.)
+  if (usingNodeBackend()) return { pending: 0, columnDropped: true };
+
   const { count, error } = await supabaseService()
     .from("projects")
     .select("id", { count: "exact", head: true })

@@ -6,6 +6,9 @@ import { vaultConfigured } from "@/lib/crypto/env";
 import { toProjectRef } from "@/lib/ping";
 import type { Project } from "@/lib/registry";
 import type { UsageSnapshot } from "@/lib/providers/types";
+import { usingNodeBackend } from "@/lib/backend/env";
+import * as api from "@/lib/backend/api";
+
 
 /**
  * The UTC calendar day of an instant.
@@ -20,7 +23,12 @@ export function utcDay(iso: string): string {
 }
 
 export type UsageRow = {
-  id: number;
+  /**
+   * `number` under Supabase (a Postgres `bigint`), `string` under the Node backend (a UUID —
+   * see backend-node/src/db/ids.ts). Widened rather than cast at the boundary because it is
+   * only ever a React key; nothing does arithmetic on it.
+   */
+  id: number | string;
   project_id: string;
   metric: string;
   value: number;
@@ -61,15 +69,33 @@ export async function captureUsage(p: Project): Promise<WatchResult> {
       ? await resolveServerCredentials(p.user_id, { accountId: p.account_id, projectId: p.id })
       : {};
 
+  /*
+   * Whether a usage read is this project's keep-alive, or merely extra information.
+   *
+   * For a `watch` provider (Neon) the daily read *is* the whole activity — so it sets the
+   * project's last-checked time and status. For a `ping` provider that also reports quotas
+   * (Upstash) it must not: writing `last_pinged_at` here would make the project look pinged
+   * every single day, `isDue` would never fire again, and the keep-alive would silently stop
+   * while the dashboard showed green. The same reason a failed stats read must not mark a
+   * project as failing — the ping is what decides that.
+   */
+  const readIsTheKeepAlive = adapter.policy.strategy === "watch";
+
   let snapshots: UsageSnapshot[];
   try {
     snapshots = await adapter.usage(toProjectRef(p), credentials);
   } catch (e) {
     const error = (e as Error).message;
-    await supabaseService()
-      .from("projects")
-      .update({ last_pinged_at: new Date().toISOString(), last_status: "error", last_error: error })
-      .eq("id", p.id);
+    if (readIsTheKeepAlive) {
+      await supabaseService()
+        .from("projects")
+        .update({
+          last_pinged_at: new Date().toISOString(),
+          last_status: "error",
+          last_error: error,
+        })
+        .eq("id", p.id);
+    }
     return { ...base, status: "error", metrics: 0, error };
   }
 
@@ -102,21 +128,51 @@ export async function captureUsage(p: Project): Promise<WatchResult> {
     }
   }
 
-  await db
-    .from("projects")
-    .update({
-      last_pinged_at: capturedAt,
-      last_status: "ok",
-      last_error: null,
-      lifecycle: "active",
-    })
-    .eq("id", p.id);
+  if (readIsTheKeepAlive) {
+    await db
+      .from("projects")
+      .update({
+        last_pinged_at: capturedAt,
+        last_status: "ok",
+        last_error: null,
+        lifecycle: "active",
+      })
+      .eq("id", p.id);
+  }
 
   return { ...base, status: "ok", metrics: snapshots.length, error: null };
 }
 
+/**
+ * Which of these projects already have a reading for the given UTC day.
+ *
+ * One query for the whole sweep, and the answer comes from the snapshots themselves rather
+ * than from a column on `projects` — so a `ping` provider's daily usage read has its own
+ * cadence without borrowing the ping clock, which it would otherwise reset. See `captureUsage`.
+ */
+export async function projectsWithUsageOn(
+  projectIds: string[],
+  day: string,
+): Promise<Set<string>> {
+  if (projectIds.length === 0) return new Set();
+
+  const { data, error } = await supabaseService()
+    .from("usage_snapshots")
+    .select("project_id")
+    .in("project_id", projectIds)
+    .eq("captured_on", day);
+
+  // A missing `captured_on` column means migration 0007 hasn't been run. Returning an empty
+  // set makes every project look due, which is the safe direction: a usage read is cheap and
+  // the upsert will surface the real problem.
+  if (error) return new Set();
+  return new Set((data ?? []).map((r) => (r as { project_id: string }).project_id));
+}
+
 /** Latest reading per metric for one project. */
 export async function latestUsage(projectId: string): Promise<UsageRow[]> {
+  if (usingNodeBackend()) return (await api.latestUsage(projectId)).usage;
+
   const { data, error } = await supabaseService()
     .from("usage_snapshots")
     .select("*")
@@ -141,6 +197,8 @@ export async function usageHistory(
   metric: string,
   days = 30,
 ): Promise<UsageRow[]> {
+  if (usingNodeBackend()) return (await api.usageHistory(projectId, metric, days)).history;
+
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
   const { data, error } = await supabaseService()
     .from("usage_snapshots")

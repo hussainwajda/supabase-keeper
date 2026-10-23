@@ -10,6 +10,9 @@ import {
 } from "@/lib/crypto/dek";
 import { assertVaultEnv } from "@/lib/crypto/env";
 import { audit } from "./audit";
+import { usingNodeBackend } from "@/lib/backend/env";
+import * as api from "@/lib/backend/api";
+
 
 /** 4-8 digits, matching what the UI accepts. */
 export const PIN_PATTERN = /^\d{4,8}$/;
@@ -47,6 +50,16 @@ export type VaultStatus = {
 };
 
 export async function vaultStatus(userId: string): Promise<VaultStatus> {
+  if (usingNodeBackend()) {
+    const s = await api.vaultStatus();
+    return {
+      initialized: s.initialized,
+      recoveryEnabled: s.recoveryEnabled,
+      lockedUntil: s.lockedUntil,
+      failedAttempts: s.failedAttempts,
+    };
+  }
+
   const p = await getVaultProfile(userId);
   return {
     initialized: !!p?.vault_initialized_at && !!p.dek_pin,

@@ -2,6 +2,7 @@ import "server-only";
 import { headers } from "next/headers";
 import { supabaseService } from "@/lib/supabase/service";
 import { legacyClaimAllowed, legacyClaimEmail } from "@/lib/supabase/env";
+import { usingNodeBackend } from "@/lib/backend/env";
 
 export type OrphanCount = { accounts: number; projects: number; total: number };
 
@@ -42,6 +43,14 @@ const NONE: OrphanCount = { accounts: 0, projects: 0, total: 0 };
 export async function claimAvailable(
   userEmail?: string | null,
 ): Promise<{ allowed: boolean; orphans: OrphanCount }> {
+  /*
+   * Never offered on the Node backend. The claim exists because rows in the Postgres registry
+   * predate authentication and have `user_id = null`; a MongoDB registry is either seeded by
+   * the migration script — which carries ownership over from the source — or created by a
+   * signed-in user, so an unowned document has no way to come into being.
+   */
+  if (usingNodeBackend()) return { allowed: false, orphans: NONE };
+
   if (!legacyClaimAllowed()) return { allowed: false, orphans: NONE };
 
   const pinned = legacyClaimEmail();

@@ -11,11 +11,11 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { LifecycleBadge, ProviderBadge, StrategyBadge } from "@/components/providers/provider-badge";
 import { KEEP_ALIVE_SQL } from "@/lib/keep-alive-sql";
-import { currentUser } from "@/lib/supabase/server";
-import { vaultConfigured } from "@/lib/crypto/env";
+import { currentUser } from "@/lib/backend/user";
 import { vaultStatus, vaultUnlocked } from "@/lib/vault";
-import { listSecrets, vaultSchemaReady } from "@/lib/vault/secrets";
+import { listSecrets, vaultReady } from "@/lib/vault/secrets";
 import { otpAvailable } from "@/lib/vault/email";
+import { serverCredentialKinds } from "@/lib/vault/kinds";
 import { SecretSlots, type SecretSlot } from "@/components/vault/secret-form";
 import { UnlockDialog } from "@/components/vault/unlock-dialog";
 import { PausedBanner } from "@/components/providers/paused-banner";
@@ -24,7 +24,7 @@ import { ConnectionStrings } from "@/components/providers/connection-strings";
 import { refreshStatus, refreshUsage } from "@/app/providers/actions";
 import { UsageMeters } from "@/components/providers/usage-meters";
 import { PlanLimits, hasPlanLimits } from "@/components/providers/plan-limits";
-import { AtlasSetup } from "@/components/providers/atlas-setup";
+import { ProviderSetup, hasProviderSetup } from "@/components/providers/provider-setup";
 import { latestUsage, usageHistory } from "@/lib/usage";
 import { deleteProject, pingNow } from "@/app/actions";
 import { cn } from "@/lib/utils";
@@ -46,30 +46,54 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
   const adapter = getProvider(project.provider);
   // Credentials panel. Each adapter declares the fields it needs and which tier they belong
   // in, so this stays correct for every provider without a per-provider branch here.
-  const vaultReady = vaultConfigured() && (await vaultSchemaReady());
-  const [status, unlocked, secrets] = vaultReady && user
-    ? await Promise.all([vaultStatus(user.id), vaultUnlocked(user.id), listSecrets({ projectId: id })])
-    : [null, false, []];
+  // The gate stays: on the Supabase backend `vaultReady` also checks the vault schema exists,
+  // and the calls below assume it does. The duplicate round trip it used to cost is gone —
+  // `vaultReady` and `vaultStatus` hit the same endpoint, which is now deduped per request.
+  const ready = await vaultReady();
+  const [status, unlocked, secrets] =
+    ready && user
+      ? await Promise.all([
+          vaultStatus(user.id),
+          vaultUnlocked(user.id),
+          listSecrets({ projectId: id }),
+        ])
+      : [null, false, []];
 
   const storedByKind = new Map(secrets.map((s) => [s.kind, s.id]));
 
   // Quota meters for `watch` providers. Nothing is fetched for a `ping` provider — Supabase
   // publishes no per-project usage, and an empty card would imply it does.
   const usage = adapter.capabilities.watch ? await latestUsage(id) : [];
-  const usageTrends: Record<string, Awaited<ReturnType<typeof usageHistory>>> = {};
-  for (const row of usage) {
-    usageTrends[row.metric] = await usageHistory(id, row.metric);
-  }
+  // One request per metric, in parallel. These were awaited in a loop, so a project with four
+  // quota meters paid four round trips end to end before the page could render at all.
+  const usageTrends: Record<string, Awaited<ReturnType<typeof usageHistory>>> = Object.fromEntries(
+    await Promise.all(
+      usage.map(async (row) => [row.metric, await usageHistory(id, row.metric)] as const),
+    ),
+  );
   const secretSlots: SecretSlot[] = adapter.projectFields.map((f) => ({
-    kind: f.key as SecretSlot["kind"],
+    kind: f.key,
     label: f.label,
     help: f.help,
     tier: f.tier,
-    existingId: storedByKind.get(f.key as SecretSlot["kind"]) ?? null,
+    existingId: storedByKind.get(f.key) ?? null,
   }));
   const { account, ...rest } = project;
   const base = toSafeProject(rest as typeof rest & { anon_key: string | null });
-  const safe = { ...base, has_key: base.has_key || storedByKind.has("anon_key") };
+  // Provider-aware, like the dashboard badge: "has credentials the sweep can use", not
+  // "has an anon_key" — which is a kind only Supabase has.
+  const usableKinds = serverCredentialKinds(project.provider);
+  const safe = {
+    ...base,
+    has_key:
+      base.has_key || secrets.some((s) => s.tier === "server" && usableKinds.has(s.kind)),
+  };
+  // Built with no secrets, so this yields the provider's names for the pair and nothing else
+  // — the strings themselves are only ever assembled behind an unlocked vault.
+  const connectionLabels = adapter.connectionStrings?.(
+    { externalId: project.external_id, name: project.name, metadata: project.metadata },
+    {},
+  )?.labels;
   const consoleUrl = adapter.consoleUrl({
     externalId: project.external_id,
     name: project.name,
@@ -207,7 +231,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
             <CardContent className="grid gap-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-sm font-semibold">Credentials</h2>
-                {vaultReady && status?.initialized && !unlocked && (
+                {ready && status?.initialized && !unlocked && (
                   <UnlockDialog
                     otpEnabled={otpAvailable()}
                     lockedUntil={status.lockedUntil}
@@ -220,15 +244,18 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
                 slots={secretSlots}
                 projectId={project.id}
                 unlocked={unlocked}
-                vaultReady={vaultReady && !!status?.initialized}
+                vaultReady={ready && !!status?.initialized}
               />
             </CardContent>
           </Card>
 
-          {project.provider === "mongodb" && (
+          {hasProviderSetup(project.provider) && (
             <Card>
               <CardContent>
-                <AtlasSetup hasConnectionString={storedByKind.has("connection_string")} />
+                <ProviderSetup
+                  provider={project.provider}
+                  storedKinds={[...storedByKind.keys()]}
+                />
               </CardContent>
             </Card>
           )}
@@ -280,6 +307,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
                   projectId={project.id}
                   unlocked={unlocked}
                   hasPassword={storedByKind.has("db_password")}
+                  labels={connectionLabels}
                 />
               </CardContent>
             </Card>

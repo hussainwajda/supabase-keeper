@@ -169,6 +169,62 @@ curl -H "Authorization: Bearer $CRON_SECRET" "https://<app>/api/cron/sweep?provi
 The cron runs **daily** (the Vercel Hobby limit), and each project is only pinged when it's due
 by its own `interval_days`. Daily is plenty: the tightest policy in the set is 7 days.
 
+## An optional Node + MongoDB backend
+
+Keepstack has two backends, and they're alternatives rather than layers:
+
+| | `supabase` (default) | `node` |
+| --- | --- | --- |
+| Data | Supabase Postgres, queried in-process | MongoDB, over a REST API |
+| Sign-in | Supabase Auth | the Node service's own |
+| Scheduler | Vercel Cron, once a day | in-process, any interval |
+
+Switching is one command:
+
+```bash
+pnpm dev              # Next.js + Supabase
+pnpm dev --nodejs     # Next.js + backend-node + MongoDB, started together
+pnpm dev:node         # the same, spelled unambiguously
+```
+
+`--nodejs` starts both processes, waits for the backend's `/health` before booting Next.js,
+prefixes their logs, and takes the whole stack down if either dies. It also sets
+`KEEPSTACK_BACKEND=node` for that run, so switching is a different command rather than a file
+edit you have to remember to undo. For a deployment, set it permanently:
+
+```bash
+KEEPSTACK_BACKEND=node
+KEEPSTACK_API_URL=http://127.0.0.1:4000
+```
+
+**The same UI renders either backend.** The switch lives in the data layer — `listProjects()`
+decides whether to query Postgres or call the API — so the ~36 call sites across the pages and
+server actions are untouched, and `lib/registry/types.ts` is the contract both sides satisfy.
+Next.js is the only thing that talks to the Node service, which is what removes any need for
+CORS or cross-site cookies.
+
+Two things differ by necessity. **Google sign-in** is hidden on the Node backend: its OAuth flow
+sets a cookie on the API's own host, which never reaches a browser that only talks to Next.js —
+email and password work normally. And the **migration banners** (claim legacy rows, run
+migration 0002, encrypt saved keys) don't appear, because none of those questions has a MongoDB
+equivalent.
+
+The four provider adapters and the whole of `lib/crypto/` moved into `backend-node/` **without
+a single code change** — the adapter contract says they never touch the registry database, and
+this is what that rule was for. The app's own crypto and provider test suites run there unedited
+and pass.
+
+`cd backend-node && pnpm migrate` brings an existing Supabase registry across with your vault
+PIN still working and every stored credential still decryptable, which takes care: a secret's
+ciphertext is bound by AAD to its owner's id, so the migration preserves primary keys rather
+than reissuing them.
+
+| | |
+| --- | --- |
+| [backend-node/README.md](backend-node/README.md) | Quick start, the full API, deployment |
+| [backend-node/docs/ARCHITECTURE.md](backend-node/docs/ARCHITECTURE.md) | The port: what replaced RLS, what got better, how the switch works |
+| [backend-node/docs/MIGRATION.md](backend-node/docs/MIGRATION.md) | Supabase → MongoDB, step by step |
+
 ## Contributing
 
 Adding a provider is one file in `lib/providers/`, one line in `registry.ts`, and one section in
@@ -187,5 +243,6 @@ they're good first issues. The reasoning for each is at the bottom of `docs/PROV
 | [docs/SECURITY.md](docs/SECURITY.md) | Threat model, key hierarchy, and the limits stated plainly |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | The nine phases and how each one is verified |
 | [docs/MIGRATION.md](docs/MIGRATION.md) | The exact order of SQL migrations and app-side steps |
+| [backend-node/](backend-node/) | The optional Node + MongoDB backend, with its own architecture and migration notes |
 
 MIT licensed.

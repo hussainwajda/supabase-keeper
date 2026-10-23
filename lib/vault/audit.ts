@@ -1,6 +1,9 @@
 import "server-only";
 import { headers } from "next/headers";
 import { supabaseService } from "@/lib/supabase/service";
+import { supabaseServer } from "@/lib/supabase/server";
+import { usingNodeBackend } from "@/lib/backend/env";
+import * as api from "@/lib/backend/api";
 
 export type AuditAction =
   | "vault.pin_set"
@@ -60,7 +63,12 @@ export async function audit(userId: string, entry: AuditEntry): Promise<void> {
 }
 
 export type AuditRow = {
-  id: number;
+  /**
+   * `number` under Supabase (a Postgres `bigint`), `string` under the Node backend (a UUID —
+   * see backend-node/src/db/ids.ts). Widened rather than cast at the boundary because it is
+   * only ever a React key; nothing does arithmetic on it.
+   */
+  id: number | string;
   action: string;
   target_type: string | null;
   target_id: string | null;
@@ -70,3 +78,24 @@ export type AuditRow = {
   detail: Record<string, unknown>;
   created_at: string;
 };
+
+/**
+ * The user's own audit trail.
+ *
+ * Read through the *user* client on the Supabase side, so the `audit_log: read own` policy is
+ * what enforces the scope rather than the `.eq("user_id", …)` below being the only thing
+ * standing between users. The Node backend scopes it server-side for the same reason — see
+ * `backend-node/src/vault/audit.ts`.
+ */
+export async function listAuditEntries(userId: string, limit = 40): Promise<AuditRow[]> {
+  if (usingNodeBackend()) return (await api.listAudit(limit)).entries;
+
+  const { data } = await (await supabaseServer())
+    .from("audit_log")
+    .select("id, action, target_type, target_id, method, ip, user_agent, detail, created_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  return (data ?? []) as AuditRow[];
+}

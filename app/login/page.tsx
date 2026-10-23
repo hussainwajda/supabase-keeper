@@ -2,6 +2,7 @@ import Link from "next/link";
 import { DatabaseZapIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { LoginForm } from "@/components/auth/login-form";
+import { usingNodeBackend } from "@/lib/backend/env";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +12,10 @@ export default async function LoginPage({
   searchParams: Promise<{ next?: string; error?: string }>;
 }) {
   const { next, error } = await searchParams;
-  const googleConfigured = process.env.KEEPSTACK_DISABLE_GOOGLE !== "true";
+  // Hidden on the Node backend: its Google flow sets a cookie on the API's own host, which
+  // never reaches a browser that only talks to Next.js. See `signInWithGoogle`.
+  const googleConfigured =
+    process.env.KEEPSTACK_DISABLE_GOOGLE !== "true" && !usingNodeBackend();
 
   return (
     <div className="mx-auto mt-[10vh] max-w-sm">

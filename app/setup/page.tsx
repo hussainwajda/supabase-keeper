@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { AlertTriangleIcon, CheckIcon } from "lucide-react";
 import { missingRegistryEnv } from "@/lib/supabase/env";
+import { usingNodeBackend } from "@/lib/backend/env";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
@@ -16,7 +17,9 @@ const WHERE: Record<string, string> = {
 };
 
 export default function SetupPage() {
-  const missing = missingRegistryEnv();
+  // On the Node backend there is no Supabase registry to configure, so listing its variables
+  // as "missing" would send someone off to create a project they don't need.
+  const missing = usingNodeBackend() ? [] : missingRegistryEnv();
   // Once configured, this page would only tell an anonymous visitor about the deployment's
   // environment. There is nothing left to set up, so send them to the app.
   if (missing.length === 0) redirect("/");

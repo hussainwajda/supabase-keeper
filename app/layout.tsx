@@ -2,10 +2,15 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Fira_Code, Fira_Sans } from "next/font/google";
 import { DatabaseZapIcon, PlusIcon } from "lucide-react";
-import { currentUser } from "@/lib/supabase/server";
+import { currentUser } from "@/lib/backend/user";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { AccountMenu } from "@/components/auth/account-menu";
+import { Toaster } from "@/components/ui/sonner";
+import { FlashToaster } from "@/components/flash-toaster";
+import { RouteProgress } from "@/components/route-progress";
+import { readFlash } from "@/lib/flash-server";
+import { Suspense } from "react";
 import "./globals.css";
 
 const firaSans = Fira_Sans({
@@ -29,11 +34,17 @@ export const metadata: Metadata = {
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const user = await currentUser();
+  // Both are needed on every page, and neither depends on the other.
+  const [user, flash] = await Promise.all([currentUser(), readFlash()]);
 
   return (
     <html lang="en" className={`${firaSans.variable} ${firaCode.variable}`} suppressHydrationWarning>
       <body>
+        {/* `useSearchParams` inside RouteProgress needs a boundary, or every page opts
+            out of static rendering to satisfy it. */}
+        <Suspense fallback={null}>
+          <RouteProgress />
+        </Suspense>
         <TooltipProvider>
           <header className="bg-card/95 supports-[backdrop-filter]:bg-card/80 sticky top-0 z-30 border-b backdrop-blur">
             <div className="mx-auto flex h-14 max-w-[1240px] flex-wrap items-center justify-between gap-3 px-4">
@@ -64,12 +75,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   </Button>
                   <AccountMenu
                     email={user.email ?? "signed in"}
-                    name={
-                      (user.user_metadata?.full_name as string | undefined) ??
-                      (user.user_metadata?.name as string | undefined) ??
-                      null
-                    }
-                    avatarUrl={(user.user_metadata?.avatar_url as string | undefined) ?? null}
+                    name={user.displayName}
+                    avatarUrl={user.avatarUrl}
                   />
                 </nav>
               )}
@@ -78,6 +85,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
           <main className="mx-auto max-w-[1240px] px-4 py-6 pb-16">{children}</main>
         </TooltipProvider>
+        <Toaster />
+        <FlashToaster flash={flash} />
       </body>
     </html>
   );
