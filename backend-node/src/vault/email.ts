@@ -2,16 +2,26 @@
 /**
  * OTP delivery.
  *
- * Resend is the production path. When no API key is configured the OTP route is disabled in
- * the UI with an explanation — the PIN still works, so the vault is fully usable without it;
- * only the "forgot my PIN" recovery path needs email.
+ * Three transports, chosen by which variables are set:
  *
- * In development you can set KEEPSTACK_OTP_DEV_ECHO=true to print codes to the server log
- * instead of sending them. It is double-gated on NODE_ENV so it cannot be switched on in a
- * production deployment by setting one variable.
+ *   resend    RESEND_API_KEY — an HTTP API, so it needs no outbound SMTP port.
+ *   smtp      SMTP_HOST + SMTP_USER + SMTP_PASS — any mailbox you already own, including
+ *             Gmail with an app password.
+ *   dev-echo  Prints the code to the server log. Double-gated on NODE_ENV so it cannot be
+ *             switched on in a production deployment by setting one variable.
+ *
+ * Resend wins when both are configured, because an API call fails faster and more clearly
+ * than an SMTP handshake. The PIN still works with no transport at all — only the
+ * "forgot my PIN" recovery path needs email.
+ *
+ * `nodemailer` is the one runtime dependency here that isn't express or mongodb. It earns
+ * that place the way the other two do: it has no dependencies of its own, so it adds a
+ * single reviewable package rather than a tree. Hand-rolling STARTTLS and AUTH inside a
+ * service that holds other people's credentials is the riskier of the two options.
  */
-export function otpTransport(): "resend" | "dev-echo" | "none" {
+export function otpTransport(): "resend" | "smtp" | "dev-echo" | "none" {
   if (process.env.RESEND_API_KEY) return "resend";
+  if (smtpConfigured()) return "smtp";
   if (process.env.NODE_ENV !== "production" && process.env.KEEPSTACK_OTP_DEV_ECHO === "true") {
     return "dev-echo";
   }
@@ -20,6 +30,26 @@ export function otpTransport(): "resend" | "dev-echo" | "none" {
 
 export function otpAvailable(): boolean {
   return otpTransport() !== "none";
+}
+
+function smtpConfigured(): boolean {
+  return !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+}
+
+/**
+ * Who the mail claims to be from.
+ *
+ * Under SMTP this defaults to the authenticated mailbox, because most providers — Gmail
+ * among them — reject or silently rewrite a From that isn't an address the account owns.
+ * Defaulting to it means an app-password setup needs three variables, not four.
+ */
+function fromAddress(transport: "resend" | "smtp"): string {
+  const configured = process.env.KEEPSTACK_FROM_EMAIL;
+  if (configured) return configured;
+  if (transport === "smtp" && process.env.SMTP_USER) return process.env.SMTP_USER;
+  throw new Error(
+    "KEEPSTACK_FROM_EMAIL is not set. Use an address on a domain you've verified with Resend.",
+  );
 }
 
 function body(code: string): { subject: string; text: string; html: string } {
@@ -55,15 +85,13 @@ export async function sendOtpEmail(to: string, code: string): Promise<void> {
 
   if (transport === "none") {
     throw new Error(
-      "Email codes are not configured. Set RESEND_API_KEY to enable PIN recovery by email.",
+      "Email codes are not configured. Set RESEND_API_KEY, or SMTP_HOST/SMTP_USER/SMTP_PASS, to enable PIN recovery by email.",
     );
   }
 
-  const from = process.env.KEEPSTACK_FROM_EMAIL;
-  if (!from) {
-    throw new Error(
-      "KEEPSTACK_FROM_EMAIL is not set. Use an address on a domain you've verified with Resend.",
-    );
+  if (transport === "smtp") {
+    await sendViaSmtp(to, { subject, text, html });
+    return;
   }
 
   const res = await fetch("https://api.resend.com/emails", {
@@ -72,7 +100,7 @@ export async function sendOtpEmail(to: string, code: string): Promise<void> {
       Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ from, to: [to], subject, text, html }),
+    body: JSON.stringify({ from: fromAddress("resend"), to: [to], subject, text, html }),
     signal: AbortSignal.timeout(15_000),
   });
 
@@ -80,5 +108,52 @@ export async function sendOtpEmail(to: string, code: string): Promise<void> {
     // Resend echoes the payload in errors, so log only the status and a short reason.
     const reason = (await res.text()).slice(0, 200);
     throw new Error(`Could not send the email (${res.status}). ${reason}`);
+  }
+}
+
+async function sendViaSmtp(
+  to: string,
+  message: { subject: string; text: string; html: string },
+): Promise<void> {
+  // Imported lazily so a deployment on Resend, or with no email at all, never loads it.
+  const nodemailer = (await import("nodemailer")).default;
+
+  const port = Number(process.env.SMTP_PORT ?? 587);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error(`SMTP_PORT must be a port number, got "${process.env.SMTP_PORT}".`);
+  }
+
+  /*
+   * `secure` means "wrap the connection in TLS from the first byte", which is port 465 only.
+   * On 587 the session starts in the clear and upgrades via STARTTLS, so `secure` must be
+   * false there — setting it true is the usual cause of a handshake that hangs until timeout.
+   * `requireTLS` then makes the upgrade mandatory rather than opportunistic, so a server that
+   * fails to offer STARTTLS gets an error instead of silently sending the code unencrypted.
+   */
+  const secure = process.env.SMTP_SECURE ? process.env.SMTP_SECURE === "true" : port === 465;
+
+  const transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port,
+    secure,
+    requireTLS: !secure,
+    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    connectionTimeout: 15_000,
+    greetingTimeout: 15_000,
+    socketTimeout: 20_000,
+  });
+
+  try {
+    await transporter.sendMail({ from: fromAddress("smtp"), to, ...message });
+  } catch (e) {
+    // An SMTP rejection quotes the message it refused, which here contains the OTP. Keep the
+    // provider's code and strip the rest rather than letting the code reach a log.
+    const err = e as { responseCode?: number; code?: string };
+    const reason = err.responseCode ?? err.code ?? "unknown error";
+    throw new Error(
+      `Could not send the email over SMTP (${reason}). Check SMTP_HOST, SMTP_PORT and the app password.`,
+    );
+  } finally {
+    transporter.close();
   }
 }

@@ -1,17 +1,21 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { Fira_Code, Fira_Sans } from "next/font/google";
-import { DatabaseZapIcon, PlusIcon } from "lucide-react";
 import { currentUser } from "@/lib/backend/user";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { Button } from "@/components/ui/button";
-import { AccountMenu } from "@/components/auth/account-menu";
 import { Toaster } from "@/components/ui/sonner";
 import { FlashToaster } from "@/components/flash-toaster";
 import { RouteProgress } from "@/components/route-progress";
 import { readFlash } from "@/lib/flash-server";
+import { Sidebar } from "@/components/sidebar";
 import { Suspense } from "react";
 import "./globals.css";
+
+/* ---------- OLD TOP-NAV IMPORTS (commented out) ---------- */
+// import Link from "next/link";
+// import { DatabaseZapIcon, PlusIcon } from "lucide-react";
+// import { Button } from "@/components/ui/button";
+// import { AccountMenu } from "@/components/auth/account-menu";
+/* --------------------------------------------------------- */
 
 const firaSans = Fira_Sans({
   subsets: ["latin"],
@@ -46,6 +50,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           <RouteProgress />
         </Suspense>
         <TooltipProvider>
+          {/* ================================================================
+              OLD TOP-NAV (commented out — kept for easy reversal)
+              ================================================================
           <header className="bg-card/95 supports-[backdrop-filter]:bg-card/80 sticky top-0 z-30 border-b backdrop-blur">
             <div className="mx-auto flex h-14 max-w-[1240px] flex-wrap items-center justify-between gap-3 px-4">
               <Link
@@ -82,8 +89,17 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               )}
             </div>
           </header>
+          ================================================================ */}
 
-          <main className="mx-auto max-w-[1240px] px-4 py-6 pb-16">{children}</main>
+          {/* NEW SIDEBAR LAYOUT — only when authenticated */}
+          {user ? (
+            <div className="app-shell">
+              <Sidebar user={user} />
+              <main className="app-main">{children}</main>
+            </div>
+          ) : (
+            <main className="mx-auto max-w-[1240px] px-4 py-6 pb-16">{children}</main>
+          )}
         </TooltipProvider>
         <Toaster />
         <FlashToaster flash={flash} />

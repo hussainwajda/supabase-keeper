@@ -190,7 +190,7 @@ export type ApiVaultStatus = {
   unlocked: boolean;
   remaining_seconds: number;
   otp_available: boolean;
-  otp_transport: "resend" | "dev-echo" | "none";
+  otp_transport: "resend" | "smtp" | "dev-echo" | "none";
   configured: boolean;
   problems: string[];
 };

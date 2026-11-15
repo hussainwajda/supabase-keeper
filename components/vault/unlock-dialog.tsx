@@ -143,7 +143,10 @@ export function UnlockDialog({
         {!otpEnabled && (
           <p className="text-muted-foreground text-xs">
             Email codes aren&apos;t configured on this deployment, so the PIN is the only way in.
-            Set <code className="font-mono">RESEND_API_KEY</code> to enable recovery.
+            Set <code className="font-mono">RESEND_API_KEY</code>, or{" "}
+            <code className="font-mono">SMTP_HOST</code>/
+            <code className="font-mono">SMTP_USER</code>/
+            <code className="font-mono">SMTP_PASS</code>, to enable recovery.
           </p>
         )}
       </DialogContent>
